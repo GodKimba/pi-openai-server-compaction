@@ -11,6 +11,7 @@ This changelog intentionally starts at **0.1.0**.
 - add a reproducible native-vs-text compaction benchmark, retained GPT-5.6 Sol evidence, and a standalone report
 - add a fixed-context, information-density-calibrated product-defaults benchmark comparing Pi's real default compactor with the extension's real native replay policy
 - correct the earlier benchmark's same-budget interpretation: its text cap was selected after observing native output usage
+- build initial remote-compaction input from Pi's active compacted context so prior summaries and kept history are included once without replaying superseded raw messages
 
 During local development on 2026-04-09, the project used temporary internal version bumps while features, tests, docs, and packaging were being assembled. Those local-only bumps were collapsed before the first public push so the repository does not imply a longer tracked public release history than it actually has.
 

@@ -91,7 +91,11 @@ for (const packageName of [
   ensureLocalPeerLink(packageName);
 }
 
-const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+const {
+  getAgentDir,
+  SessionManager,
+  sessionEntryToContextMessages,
+} = await import("@earendil-works/pi-coding-agent");
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = "~/.pi-agent-dir-smoke";
 assert.equal(getAgentDir(), join(homedir(), ".pi-agent-dir-smoke"));
@@ -102,6 +106,7 @@ const { default: extensionFactory } = await import(pathToFileURL(join(repoRoot, 
 assert.equal(typeof extensionFactory, "function", "extension entrypoint should export a function");
 
 const {
+  activeContextMessagesToResponseItems,
   buildCodexWebSocketHeaders,
   buildRemoteCompactionHeaders,
   buildRemoteCompactionV1Headers,
@@ -109,6 +114,7 @@ const {
   buildRemoteCompactionDetails,
   buildRemoteCompactionRequestBody,
   buildRemoteCompactionV2History,
+  callRemoteCompactionEndpoint,
   extractRemoteCompactionDetails,
   normalizeResponseItemsForPrompt,
   parseRemoteCompactionV1Response,
@@ -339,6 +345,111 @@ assert.deepEqual(
   { model: "gpt-5.6-sol", input: v1Output },
 );
 
+const zeroUsage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+const assistantMessage = (text) => ({
+  role: "assistant",
+  provider: "cliproxy",
+  api: "openai-responses",
+  model: "gpt-5.6-sol",
+  content: [{ type: "text", text }],
+  usage: zeroUsage,
+  stopReason: "stop",
+  timestamp: Date.now(),
+});
+const activeContextSession = SessionManager.inMemory(repoRoot);
+activeContextSession.appendMessage({ role: "user", content: "SUPERSEDED_RAW_HISTORY", timestamp: Date.now() });
+activeContextSession.appendMessage(assistantMessage("SUPERSEDED_RAW_REPLY"));
+const firstKeptEntryId = activeContextSession.appendMessage({
+  role: "user",
+  content: "KEPT_HISTORY",
+  timestamp: Date.now(),
+});
+activeContextSession.appendMessage(assistantMessage("KEPT_REPLY"));
+activeContextSession.appendCompaction("ACTIVE_LOCAL_SUMMARY", firstKeptEntryId, 1000);
+activeContextSession.appendMessage({ role: "user", content: "CURRENT_HISTORY", timestamp: Date.now() });
+activeContextSession.appendMessage(assistantMessage("CURRENT_REPLY"));
+
+const firstRemoteInput = normalizeResponseItemsForPrompt(
+  activeContextMessagesToResponseItems(
+    activeContextSession.buildContextEntries().flatMap(sessionEntryToContextMessages),
+  ),
+  cliProxyModel,
+);
+const firstRemoteInputJson = JSON.stringify(firstRemoteInput);
+const occurrences = (text, marker) => text.split(marker).length - 1;
+assert.equal(occurrences(firstRemoteInputJson, "ACTIVE_LOCAL_SUMMARY"), 1);
+assert.equal(occurrences(firstRemoteInputJson, "KEPT_HISTORY"), 1);
+assert.equal(occurrences(firstRemoteInputJson, "KEPT_REPLY"), 1);
+assert.equal(occurrences(firstRemoteInputJson, "CURRENT_HISTORY"), 1);
+assert.equal(occurrences(firstRemoteInputJson, "CURRENT_REPLY"), 1);
+assert.equal(occurrences(firstRemoteInputJson, "SUPERSEDED_RAW_HISTORY"), 0);
+assert.equal(occurrences(firstRemoteInputJson, "SUPERSEDED_RAW_REPLY"), 0);
+
+let capturedV1RequestBody;
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (_input, init) => {
+  capturedV1RequestBody = JSON.parse(String(init?.body));
+  return new Response(JSON.stringify({
+    output: [{ type: "compaction_summary", encrypted_content: "SYNTHETIC_NONEMPTY_ARTIFACT" }],
+  }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+};
+let successfulV1Result;
+try {
+  successfulV1Result = await callRemoteCompactionEndpoint({
+    model: cliProxyModel,
+    apiKey: "synthetic-test-key",
+    sessionId: "synthetic-session",
+    input: firstRemoteInput,
+    instructions: "system",
+    tools: [],
+    parallelToolCalls: true,
+  });
+} finally {
+  globalThis.fetch = originalFetch;
+}
+assert.deepEqual(capturedV1RequestBody.input, firstRemoteInput);
+assert.equal(occurrences(JSON.stringify(capturedV1RequestBody.input), "ACTIVE_LOCAL_SUMMARY"), 1);
+assert.equal(occurrences(JSON.stringify(capturedV1RequestBody.input), "SUPERSEDED_RAW_HISTORY"), 0);
+const successfulArtifacts = successfulV1Result.output.filter(
+  (item) =>
+    (item.type === "compaction" || item.type === "compaction_summary") &&
+    typeof item.encrypted_content === "string" &&
+    item.encrypted_content.length > 0,
+);
+assert.equal(successfulArtifacts.length, 1);
+
+const persistedV1Details = buildRemoteCompactionDetails(cliProxyModel, successfulV1Result.output);
+assert.equal(persistedV1Details.implementation, "responses_compact_v1");
+activeContextSession.appendCompaction("PORTABLE_REMOTE_SUMMARY", firstKeptEntryId, 500, {
+  remoteCompaction: persistedV1Details,
+}, true);
+activeContextSession.appendMessage({ role: "user", content: "AFTER_RELOAD_USER", timestamp: Date.now() });
+activeContextSession.appendMessage(assistantMessage("AFTER_RELOAD_REPLY"));
+const resumedV1State = reconstructRemoteCompactionStateFromBranch({
+  branchEntries: activeContextSession.getBranch(),
+});
+assert.ok(resumedV1State, "expected persisted v1 state to reconstruct after resume");
+assert.equal(
+  resumedV1State.explicitHistory.filter(
+    (item) => item.type === "compaction" || item.type === "compaction_summary",
+  ).length,
+  1,
+);
+const resumedV1Json = JSON.stringify(resumedV1State.explicitHistory);
+assert.equal(occurrences(resumedV1Json, "AFTER_RELOAD_USER"), 1);
+assert.equal(occurrences(resumedV1Json, "AFTER_RELOAD_REPLY"), 1);
+assert.equal(occurrences(resumedV1Json, "SUPERSEDED_RAW_HISTORY"), 0);
+
 const parsedV2Events = parseRemoteCompactionV2Events([
   {
     type: "response.output_item.done",
@@ -425,7 +536,7 @@ assert.equal(websocketHeaders["x-codex-window-id"], "session-123:0");
 const v1Details = buildRemoteCompactionDetails(cliProxyModel, v1Output);
 assert.equal(v1Details.version, 1);
 assert.equal(v1Details.provider, "openai-responses-compact");
-assert.equal(v1Details.implementation, undefined);
+assert.equal(v1Details.implementation, "responses_compact_v1");
 assert.deepEqual(v1Details.replacementHistory, v1Output);
 
 const detailsRoundTrip = extractRemoteCompactionDetails({

@@ -4,7 +4,11 @@
  * Wires together request patching, remote compaction, runtime state
  * reconstruction, session lifecycle cleanup, and provider override registration.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  sessionEntryToContextMessages,
+  type ExtensionAPI,
+  type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { isRecord, loadConfig } from "./config.ts";
 import { streamOpenAIResponsesWithPhase2B } from "./custom-stream.ts";
@@ -25,13 +29,13 @@ import {
 } from "./openai.ts";
 import { releaseAllWsSessions, releaseWsSession } from "./openai-ws-stream.ts";
 import {
+  activeContextMessagesToResponseItems,
   buildCompactionSummaryText,
   buildRemoteCompactionDetails,
   buildToolsPayload,
   callRemoteCompactionEndpoint,
   generateBestEffortLocalSummary,
   messageToResponseItems,
-  messagesToResponseItems,
   normalizeResponseItemsForPrompt,
   reconstructRemoteCompactionStateFromBranch,
 } from "./remote-compaction.ts";
@@ -62,6 +66,7 @@ type SessionContextLike = {
   sessionManager: {
     getSessionId(): string;
     getBranch(): BranchEntry[];
+    buildContextEntries(): SessionEntry[];
   };
 };
 
@@ -216,7 +221,9 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     const fullBranchMessages = getBranchMessages(branchEntries);
     const responseItems = remoteState
       ? remoteState.explicitHistory
-      : messagesToResponseItems(fullBranchMessages);
+      : activeContextMessagesToResponseItems(
+          ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages),
+        );
     const promptResponseItems = normalizeResponseItemsForPrompt(responseItems, model);
     const thinkingLevel = pi.getThinkingLevel();
     const fallbackReasoning = model.reasoning
