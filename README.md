@@ -199,7 +199,7 @@ PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai-codex/gpt-5.6-sol npm run test:liv
 | File                                       | Purpose                                                           |
 |--------------------------------------------|-------------------------------------------------------------------|
 | `src/index.ts`                             | Extension wiring, compaction hook, lifecycle handling             |
-| `src/remote-compaction.ts`                 | Responses compaction v2 integration and replacement-history handling |
+| `src/remote-compaction.ts`                 | Responses compaction and replacement-history handling             |
 | `src/openai-ws-stream.ts`                  | WebSocket continuation path                                       |
 | `src/openai-ws-connection.ts`              | WebSocket connection manager                                      |
 | `src/openai.ts`                            | Model detection and payload patching                              |

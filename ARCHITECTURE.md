@@ -22,8 +22,8 @@ In practice, that means keeping two representations of context alive at once:
 
 2. **OpenAI-native representation**
    - for direct `openai/*`: `previous_response_id` for live continuation when safe
-   - for supported backends: opaque replacement history returned by Responses compaction v2
-   - used only for compatible future OpenAI/OpenAI Codex turns
+   - for supported backends: opaque replacement history returned by direct-provider compaction v2 or eligible CLIProxy compact v1
+   - used only for compatible future OpenAI, OpenAI Codex, or CLIProxy Responses turns
 
 ## High-level flow
 
@@ -48,18 +48,21 @@ In practice, that means keeping two representations of context alive at once:
 2. `src/index.ts` handles `session_before_compact`.
 3. In parallel, it tries to:
    - generate a **portable local summary**
-   - request Responses compaction v2
-4. `src/remote-compaction.ts` converts Pi messages to OpenAI Responses `input` items, appends a `compaction_trigger`, and streams the compaction response from the normal Responses endpoint.
-5. If remote compaction succeeds, the returned opaque replacement history is stored in:
+   - request remote compaction through the transport selected for the active model
+4. Before a remote artifact exists, `src/index.ts` derives remote input from Pi's compaction-aware active-context projection. This includes the latest local summary plus kept and trailing messages once, without replaying the raw history that summary replaced. Once an artifact exists, reconstructed replacement history is the input source instead.
+5. `src/remote-compaction.ts` converts that input to OpenAI Responses items and either:
+   - appends a `compaction_trigger` and streams compaction v2 from `/v1/responses`, or
+   - sends the standard non-streaming compact-v1 request to an eligible CLIProxy endpoint
+6. If remote compaction succeeds, the returned opaque replacement history is stored in:
    - `CompactionEntry.details.remoteCompaction`
-6. Pi still keeps a text summary so the session remains understandable and portable.
+7. Pi still keeps a text summary so the session remains understandable and portable.
 
 ### Post-compaction continuation
 
-For later direct OpenAI Responses turns, the extension prefers:
+For later compatible Responses turns, the extension prefers:
 
 - the persisted/reconstructed remote replacement history, when model-compatible
-- otherwise safe live continuation using `previous_response_id`
+- otherwise safe live continuation using `previous_response_id` for direct OpenAI models
 - otherwise ordinary full-input replay / Pi fallback behavior
 
 ## Persisted state vs runtime state
@@ -72,7 +75,7 @@ Persisted state lives in the session JSONL file and survives reloads:
 - Pi `compaction` entries
 - `compaction.details.remoteCompaction`
 
-The persisted `remoteCompaction` payload is the important bridge to Codex-style behavior. Version 2 contains retained user messages plus the opaque `compaction` item returned by Responses compaction v2. Version 1 entries from the legacy `/responses/compact` implementation remain readable for session compatibility.
+The persisted `remoteCompaction` payload is the important bridge to Codex-style behavior. Version 2 contains retained user messages plus the opaque `compaction` item returned by Responses compaction v2. Eligible CLIProxy models persist compact-v1 history with `implementation: "responses_compact_v1"`; older version 1 entries without that marker remain readable for session compatibility.
 
 ### Runtime-only state
 
@@ -110,8 +113,8 @@ The Codex-style compaction layer.
 
 Responsibilities:
 - convert Pi messages to OpenAI Responses-style input items
-- call `POST /v1/responses` with a trailing `compaction_trigger`
-- parse the Responses SSE stream and validate the returned `compaction` item
+- call `POST /v1/responses` with a trailing `compaction_trigger`, or the eligible CLIProxy compact-v1 endpoint
+- parse the selected transport and require exactly one non-empty opaque artifact
 - retain recent user messages using Codex's 20K-token budget shape
 - build portable text summaries
 - rebuild replayable remote state from persisted compaction entries
@@ -178,7 +181,7 @@ The extension intentionally avoids reusing provider-native continuity blindly.
 
 Important safety rules:
 
-- remote replacement history is only reused for compatible OpenAI/OpenAI Codex Responses models
+- remote replacement history is only reused for compatible OpenAI, OpenAI Codex, or CLIProxy Responses models
 - in-memory remote history is only extended while the active model still matches the compaction model
 - reconstructed remote history only replays post-compaction turns whose assistant completions match the compaction model, avoiding cross-model pollution after resume/tree reload
 - live `previous_response_id` state is cleared on key session/model lifecycle boundaries
@@ -206,7 +209,7 @@ So the package is intentionally hybrid:
 
 - `npm run smoke`
 
-Verifies imports/loadability.
+Verifies imports/loadability and focused offline regressions, including active-context projection, opaque compact-v1 persistence, and reconstruction after resume.
 
 ### Live end-to-end test
 
