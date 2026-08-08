@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, lstatSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -363,7 +363,10 @@ const assistantMessage = (text) => ({
   stopReason: "stop",
   timestamp: Date.now(),
 });
-const activeContextSession = SessionManager.inMemory(repoRoot);
+const persistedSessionDir = mkdtempSync(join(repoRoot, ".smoke-session-"));
+const cleanupPersistedSession = () => rmSync(persistedSessionDir, { recursive: true, force: true });
+process.once("exit", cleanupPersistedSession);
+const activeContextSession = SessionManager.create(repoRoot, persistedSessionDir);
 activeContextSession.appendMessage({ role: "user", content: "SUPERSEDED_RAW_HISTORY", timestamp: Date.now() });
 activeContextSession.appendMessage(assistantMessage("SUPERSEDED_RAW_REPLY"));
 const firstKeptEntryId = activeContextSession.appendMessage({
@@ -435,8 +438,11 @@ activeContextSession.appendCompaction("PORTABLE_REMOTE_SUMMARY", firstKeptEntryI
 }, true);
 activeContextSession.appendMessage({ role: "user", content: "AFTER_RELOAD_USER", timestamp: Date.now() });
 activeContextSession.appendMessage(assistantMessage("AFTER_RELOAD_REPLY"));
+const persistedSessionFile = activeContextSession.getSessionFile();
+assert.ok(persistedSessionFile, "expected persisted session file");
+const resumedSession = SessionManager.open(persistedSessionFile, persistedSessionDir);
 const resumedV1State = reconstructRemoteCompactionStateFromBranch({
-  branchEntries: activeContextSession.getBranch(),
+  branchEntries: resumedSession.getBranch(),
 });
 assert.ok(resumedV1State, "expected persisted v1 state to reconstruct after resume");
 assert.equal(
@@ -449,6 +455,8 @@ const resumedV1Json = JSON.stringify(resumedV1State.explicitHistory);
 assert.equal(occurrences(resumedV1Json, "AFTER_RELOAD_USER"), 1);
 assert.equal(occurrences(resumedV1Json, "AFTER_RELOAD_REPLY"), 1);
 assert.equal(occurrences(resumedV1Json, "SUPERSEDED_RAW_HISTORY"), 0);
+process.removeListener("exit", cleanupPersistedSession);
+cleanupPersistedSession();
 
 const parsedV2Events = parseRemoteCompactionV2Events([
   {
