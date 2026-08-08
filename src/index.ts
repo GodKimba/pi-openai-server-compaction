@@ -14,6 +14,7 @@ import {
   extractAssistantResponseId,
   extractResponsesReasoningConfig,
   extractResponsesTextConfig,
+  isCliProxyResponsesModel,
   isOpenAICodexResponsesModel,
   looksLikeResponsesPayload,
   messageMatchesModel,
@@ -330,7 +331,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     });
     const remoteState = getMatchingRemoteState(sessionId, model);
 
-    if (isOpenAICodexResponsesModel(model)) {
+    if (isOpenAICodexResponsesModel(model) || isCliProxyResponsesModel(model)) {
       if (!remoteState) return undefined;
       const payload = applyRemoteHistoryPayloadPatch({
         payload: event.payload,
