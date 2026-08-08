@@ -19,11 +19,12 @@ import {
   serializeConversation,
   type CompactionResult,
 } from "@earendil-works/pi-coding-agent";
-import { calculateCost, type Model, type Usage } from "@earendil-works/pi-ai";
+import { calculateCost, type Model, type ProviderHeaders, type Usage } from "@earendil-works/pi-ai";
 import { complete } from "@earendil-works/pi-ai/compat";
 import { isRecord } from "./config.ts";
 import {
   hostnameFromBaseUrl,
+  isCliProxyResponsesModel,
   isDirectOpenAIResponsesModel,
   isOpenAICodexResponsesModel,
   supportsRemoteCompactionModel,
@@ -109,6 +110,17 @@ function normalizeBaseUrl(baseUrl: string | undefined, fallback: string): string
   const trimmed = baseUrl?.trim();
   if (!trimmed) return fallback;
   return trimmed.replace(/\/+$/, "");
+}
+
+function resolveCliProxyCompactEndpoint(model: Model<any>): string {
+  const baseUrl = normalizeBaseUrl(typeof model.baseUrl === "string" ? model.baseUrl : undefined, "");
+  if (baseUrl.endsWith("/responses")) return `${baseUrl}/compact`;
+  return baseUrl.endsWith("/v1") ? `${baseUrl}/responses/compact` : `${baseUrl}/v1/responses/compact`;
+}
+
+export function remoteCompactionV1EndpointUrl(model: Model<any>): string {
+  if (isCliProxyResponsesModel(model)) return resolveCliProxyCompactEndpoint(model);
+  throw new Error("Remote compaction v1 is not supported for this model.");
 }
 
 function resolveDirectOpenAIResponsesEndpoint(model: Model<any>): string {
@@ -198,6 +210,34 @@ function extractCodexAccountId(token: string): string {
   return accountId;
 }
 
+function applyProviderHeaderOverrides(
+  initial: Record<string, string>,
+  overrides?: ProviderHeaders,
+): Record<string, string> {
+  const headers = new Headers(initial);
+  for (const [name, value] of Object.entries(overrides ?? {})) {
+    if (value === null) headers.delete(name);
+    else headers.set(name, value);
+  }
+  return Object.fromEntries(headers.entries());
+}
+
+export function buildRemoteCompactionV1Headers(params: {
+  apiKey: string;
+  headers?: ProviderHeaders;
+  sessionId?: string;
+}): Record<string, string> {
+  return applyProviderHeaderOverrides(
+    {
+      authorization: `Bearer ${params.apiKey}`,
+      accept: "application/json",
+      "content-type": "application/json",
+      ...(params.sessionId ? { session_id: params.sessionId } : {}),
+    },
+    params.headers,
+  );
+}
+
 function withRemoteCompactionV2Feature(headers: Record<string, string>): Record<string, string> {
   const configuredFeatures = Object.entries(headers)
     .find(([name]) => name.toLowerCase() === "x-codex-beta-features")?.[1]
@@ -217,14 +257,18 @@ function withRemoteCompactionV2Feature(headers: Record<string, string>): Record<
 export function buildRemoteCompactionHeaders(params: {
   model: Model<any>;
   apiKey: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
   sessionId?: string;
 }): Record<string, string> {
   const codexIdentityHeaders = buildCodexIdentityHeaders(params.sessionId);
   const commonHeaders = withRemoteCompactionV2Feature({
-    authorization: `Bearer ${params.apiKey}`,
-    ...codexIdentityHeaders,
-    ...(params.headers ?? {}),
+    ...applyProviderHeaderOverrides(
+      {
+        authorization: `Bearer ${params.apiKey}`,
+        ...codexIdentityHeaders,
+      },
+      params.headers,
+    ),
     accept: "text/event-stream",
     "content-type": "application/json",
   });
@@ -681,7 +725,7 @@ export async function generatePortableSummary(params: {
   messages: AgentMessage[];
   model: Model<any>;
   apiKey: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
   customInstructions?: string;
   signal?: AbortSignal;
   firstKeptEntryId: string;
@@ -725,7 +769,7 @@ export async function generateBestEffortLocalSummary(params: {
   messages: AgentMessage[];
   model: Model<any>;
   apiKey: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
   customInstructions?: string;
   signal?: AbortSignal;
   thinkingLevel?: ThinkingLevel;
@@ -739,7 +783,7 @@ export async function generateBestEffortLocalSummary(params: {
       params.preparation,
       params.model,
       params.apiKey,
-      params.headers,
+      params.headers as Record<string, string> | undefined,
       params.customInstructions,
       params.signal,
       params.thinkingLevel,
@@ -824,6 +868,48 @@ function parseRemoteCompactionUsageSnapshot(value: unknown): RemoteCompactionUsa
       total: 0,
     },
   };
+}
+
+export function buildRemoteCompactionV1RequestBody(params: {
+  model: Model<any>;
+  input: ResponseItem[];
+  instructions?: string;
+  tools: Record<string, unknown>[];
+  parallelToolCalls: boolean;
+  reasoning?: ResponsesReasoningConfig;
+  text?: ResponsesTextConfig;
+}): Record<string, unknown> {
+  return {
+    model: params.model.id,
+    input: params.input,
+    instructions: params.instructions,
+    tools: params.tools,
+    parallel_tool_calls: params.parallelToolCalls,
+    ...(params.reasoning ? { reasoning: params.reasoning } : {}),
+    ...(params.text ? { text: params.text } : {}),
+  };
+}
+
+export function parseRemoteCompactionV1Response(value: unknown): {
+  output: ResponseItem[];
+  usage?: unknown;
+} {
+  if (!isRecord(value) || !Array.isArray(value.output)) {
+    throw new Error("OpenAI remote compaction v1 returned no output array.");
+  }
+  const output = value.output.filter(isResponseItem);
+  const artifacts = output.filter(
+    (item) =>
+      (item.type === "compaction" || item.type === "compaction_summary") &&
+      typeof item.encrypted_content === "string" &&
+      item.encrypted_content.length > 0,
+  );
+  if (artifacts.length !== 1) {
+    throw new Error(
+      `OpenAI remote compaction v1 expected exactly one opaque compaction artifact, got ${artifacts.length}.`,
+    );
+  }
+  return { output, usage: value.usage };
 }
 
 export function buildRemoteCompactionRequestBody(params: {
@@ -919,7 +1005,7 @@ export function parseRemoteCompactionV2Events(events: unknown[]): RemoteCompacti
 export async function callRemoteCompactionEndpoint(params: {
   model: Model<any>;
   apiKey: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
   sessionId?: string;
   input: ResponseItem[];
   instructions?: string;
@@ -930,37 +1016,44 @@ export async function callRemoteCompactionEndpoint(params: {
   signal?: AbortSignal;
 }): Promise<RemoteCompactionResult> {
   if (!supportsRemoteCompactionModel(params.model)) {
-    throw new Error("Remote compaction v2 is currently only enabled for supported OpenAI-compatible Responses models.");
+    throw new Error("Remote compaction is not enabled for this model.");
   }
 
-  const response = await fetch(remoteCompactionV2EndpointUrl(params.model), {
-    method: "POST",
-    headers: buildRemoteCompactionHeaders({
-      model: params.model,
-      apiKey: params.apiKey,
-      headers: params.headers,
-      sessionId: params.sessionId,
-    }),
-    body: JSON.stringify(buildRemoteCompactionRequestBody({
-      model: params.model,
-      input: params.input,
-      instructions: params.instructions,
-      tools: params.tools,
-      parallelToolCalls: params.parallelToolCalls,
-      reasoning: params.reasoning,
-      text: params.text,
-      sessionId: params.sessionId,
-    })),
-    signal: params.signal,
-  });
+  const useV1 = isCliProxyResponsesModel(params.model);
+  const response = await fetch(
+    useV1
+      ? remoteCompactionV1EndpointUrl(params.model)
+      : remoteCompactionV2EndpointUrl(params.model),
+    {
+      method: "POST",
+      headers: useV1
+        ? buildRemoteCompactionV1Headers(params)
+        : buildRemoteCompactionHeaders(params),
+      body: JSON.stringify(
+        useV1
+          ? buildRemoteCompactionV1RequestBody(params)
+          : buildRemoteCompactionRequestBody(params),
+      ),
+      signal: params.signal,
+    },
+  );
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`OpenAI remote compaction v2 failed (${response.status}): ${text || response.statusText}`);
+    throw new Error(
+      `OpenAI remote compaction ${useV1 ? "v1" : "v2"} failed (${response.status}): ${text || response.statusText}`,
+    );
   }
 
-  const responseText = await response.text();
-  const parsed = parseRemoteCompactionV2Events(parseSseData(responseText));
+  if (useV1) {
+    const parsed = parseRemoteCompactionV1Response(await response.json());
+    return {
+      output: parsed.output,
+      usage: extractRemoteCompactionUsage(params.model, parsed.usage),
+    };
+  }
+
+  const parsed = parseRemoteCompactionV2Events(parseSseData(await response.text()));
   return {
     output: buildRemoteCompactionV2History(params.input, parsed.compactionItem),
     usage: extractRemoteCompactionUsage(params.model, parsed.usage),
@@ -972,6 +1065,15 @@ export function buildRemoteCompactionDetails(
   replacementHistory: ResponseItem[],
   usage?: RemoteCompactionUsageSnapshot,
 ): RemoteCompactionDetails {
+  if (isCliProxyResponsesModel(model)) {
+    return {
+      version: 1,
+      provider: "openai-responses-compact",
+      modelKey: modelKey(model),
+      replacementHistory,
+      ...(usage ? { usage } : {}),
+    };
+  }
   return {
     version: 2,
     provider: "openai-responses-compaction",

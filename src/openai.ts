@@ -61,6 +61,17 @@ export function isDirectOpenAIResponsesModel(model: ModelLike): boolean {
   return host === undefined || host === "api.openai.com";
 }
 
+export function isCliProxyResponsesModel(model: ModelLike): boolean {
+  if (model.provider !== "cliproxy" || model.api !== "openai-responses") return false;
+  if (typeof model.baseUrl !== "string" || !model.baseUrl.trim()) return false;
+  try {
+    const url = new URL(model.baseUrl);
+    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function isAzureOpenAIResponsesModel(model: ModelLike): boolean {
   if (model.api !== "azure-openai-responses" && model.api !== "openai-responses") return false;
   const provider = typeof model.provider === "string" ? model.provider : "";
@@ -88,7 +99,11 @@ export function supportsPreviousResponseId(
 
 export function supportsRemoteCompactionModel(model: unknown): model is ModelLike {
   if (!isOpenAIResponsesModel(model)) return false;
-  return isDirectOpenAIResponsesModel(model) || isOpenAICodexResponsesModel(model);
+  return (
+    isDirectOpenAIResponsesModel(model) ||
+    isOpenAICodexResponsesModel(model) ||
+    isCliProxyResponsesModel(model)
+  );
 }
 
 export function resolveCompactThreshold(

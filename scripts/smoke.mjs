@@ -91,22 +91,38 @@ for (const packageName of [
   ensureLocalPeerLink(packageName);
 }
 
+const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = "~/.pi-agent-dir-smoke";
+assert.equal(getAgentDir(), join(homedir(), ".pi-agent-dir-smoke"));
+if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+
 const { default: extensionFactory } = await import(pathToFileURL(join(repoRoot, "src", "index.ts")).href);
 assert.equal(typeof extensionFactory, "function", "extension entrypoint should export a function");
 
 const {
   buildCodexWebSocketHeaders,
   buildRemoteCompactionHeaders,
+  buildRemoteCompactionV1Headers,
+  buildRemoteCompactionV1RequestBody,
   buildRemoteCompactionDetails,
   buildRemoteCompactionRequestBody,
   buildRemoteCompactionV2History,
   extractRemoteCompactionDetails,
   normalizeResponseItemsForPrompt,
+  parseRemoteCompactionV1Response,
   parseRemoteCompactionV2Events,
   processCompactedHistory,
   reconstructRemoteCompactionStateFromBranch,
+  remoteCompactionV1EndpointUrl,
   remoteCompactionV2EndpointUrl,
 } = await import(pathToFileURL(join(repoRoot, "src", "remote-compaction.ts")).href);
+const {
+  applyRemoteHistoryPayloadPatch,
+  isCliProxyResponsesModel,
+  supportsRemoteCompactionModel,
+} = await import(pathToFileURL(join(repoRoot, "src", "openai.ts")).href);
 const {
   selectInputItemsForContinuation,
 } = await import(pathToFileURL(join(repoRoot, "src", "openai-ws-stream.ts")).href);
@@ -235,6 +251,94 @@ assert.equal(
   "https://chatgpt.com/backend-api/codex/responses",
 );
 
+const cliProxyModel = {
+  provider: "cliproxy",
+  api: "openai-responses",
+  id: "gpt-5.6-sol",
+  baseUrl: "http://127.0.0.1:8317/v1",
+};
+assert.equal(isCliProxyResponsesModel(cliProxyModel), true);
+assert.equal(supportsRemoteCompactionModel(cliProxyModel), true);
+assert.equal(isCliProxyResponsesModel({ ...cliProxyModel, provider: "openai" }), false);
+assert.equal(isCliProxyResponsesModel({ ...cliProxyModel, api: "openai-codex-responses" }), false);
+assert.equal(isCliProxyResponsesModel({ ...cliProxyModel, baseUrl: "file:///tmp/proxy" }), false);
+assert.equal(isCliProxyResponsesModel({ ...cliProxyModel, baseUrl: "" }), false);
+assert.equal(isCliProxyResponsesModel({ ...cliProxyModel, id: "cliproxy-looking-name", provider: "other" }), false);
+assert.equal(
+  remoteCompactionV1EndpointUrl(cliProxyModel),
+  "http://127.0.0.1:8317/v1/responses/compact",
+);
+
+const v1RequestBody = buildRemoteCompactionV1RequestBody({
+  model: cliProxyModel,
+  input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }],
+  instructions: "system",
+  tools: [{ type: "function", name: "read" }],
+  parallelToolCalls: true,
+  reasoning: { effort: "high", summary: "auto" },
+  text: { verbosity: "medium" },
+});
+assert.deepEqual(Object.keys(v1RequestBody).sort(), [
+  "input",
+  "instructions",
+  "model",
+  "parallel_tool_calls",
+  "reasoning",
+  "text",
+  "tools",
+]);
+assert.equal(JSON.stringify(v1RequestBody).includes("compaction_trigger"), false);
+for (const field of ["stream", "store", "include", "tool_choice", "prompt_cache_key"]) {
+  assert.equal(field in v1RequestBody, false, `v1 request must omit ${field}`);
+}
+
+const v1Headers = buildRemoteCompactionV1Headers({
+  apiKey: "proxy-key",
+  sessionId: "pi-session-123",
+  headers: {
+    authorization: "Bearer proxy-override",
+    "x-remove-me": null,
+    "x-proxy-header": "yes",
+  },
+});
+assert.equal(v1Headers.authorization, "Bearer proxy-override");
+assert.equal(v1Headers.session_id, "pi-session-123");
+assert.equal(v1Headers.accept, "application/json");
+assert.equal(v1Headers["content-type"], "application/json");
+assert.equal("x-remove-me" in v1Headers, false);
+assert.equal(v1Headers["x-proxy-header"], "yes");
+assert.equal(
+  "authorization" in buildRemoteCompactionV1Headers({
+    apiKey: "proxy-key",
+    headers: { authorization: null },
+  }),
+  false,
+);
+
+const v1Output = [
+  { type: "message", role: "user", content: [{ type: "input_text", text: "replacement" }] },
+  { type: "compaction_summary", encrypted_content: "OPAQUE" },
+];
+assert.deepEqual(parseRemoteCompactionV1Response({ output: v1Output }).output, v1Output);
+assert.throws(
+  () => parseRemoteCompactionV1Response({ output: [{ type: "message", role: "user", content: [] }] }),
+  /exactly one opaque compaction artifact/,
+);
+assert.throws(
+  () => parseRemoteCompactionV1Response({ output: [
+    { type: "compaction", encrypted_content: "ONE" },
+    { type: "compaction_summary", encrypted_content: "TWO" },
+  ] }),
+  /got 2/,
+);
+assert.deepEqual(
+  applyRemoteHistoryPayloadPatch({
+    payload: { model: "gpt-5.6-sol", messages: ["old"], previous_response_id: "resp_old" },
+    explicitHistory: v1Output,
+  }),
+  { model: "gpt-5.6-sol", input: v1Output },
+);
+
 const parsedV2Events = parseRemoteCompactionV2Events([
   {
     type: "response.output_item.done",
@@ -302,13 +406,14 @@ const compactionHeaders = buildRemoteCompactionHeaders({
   },
   apiKey: "sk-test",
   sessionId: "session-123",
-  headers: { "x-extra": "yes" },
+  headers: { "x-extra": "yes", "x-remove": null },
 });
 assert.equal(compactionHeaders.authorization, "Bearer sk-test");
 assert.equal(compactionHeaders.session_id, "session-123");
 assert.equal(compactionHeaders["x-codex-window-id"], "session-123:0");
 assert.match(compactionHeaders["x-codex-installation-id"], /^[0-9a-f-]{36}$/);
 assert.equal(compactionHeaders["x-extra"], "yes");
+assert.equal("x-remove" in compactionHeaders, false);
 assert.equal(compactionHeaders["x-codex-beta-features"], "remote_compaction_v2");
 assert.equal(compactionHeaders.accept, "text/event-stream");
 
@@ -316,6 +421,12 @@ const websocketHeaders = buildCodexWebSocketHeaders("session-123");
 assert.equal(websocketHeaders["x-client-request-id"], "session-123");
 assert.equal(websocketHeaders.session_id, "session-123");
 assert.equal(websocketHeaders["x-codex-window-id"], "session-123:0");
+
+const v1Details = buildRemoteCompactionDetails(cliProxyModel, v1Output);
+assert.equal(v1Details.version, 1);
+assert.equal(v1Details.provider, "openai-responses-compact");
+assert.equal(v1Details.implementation, undefined);
+assert.deepEqual(v1Details.replacementHistory, v1Output);
 
 const detailsRoundTrip = extractRemoteCompactionDetails({
   remoteCompaction: buildRemoteCompactionDetails(

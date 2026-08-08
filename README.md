@@ -41,13 +41,19 @@ https://x.com/alexisgallagher/status/2042396986327060736?s=20 .)
 
 > **Status:** experimental but live-tested against real Pi + real OpenAI backends.
 > Recommended rollout: install project-local first, use for a week, keep rollback easy.
+>
+> Pi 0.84 compatibility is based on upstream Algal commit
+> `8a3de2f3b0c178fdd6f73f2f94172dfc3943e466`; the CLIProxy compact-v1 path is
+> restored from Algal's original implementation at
+> `fcc4cd34f714df1667dcdde59b681fc9cf656a7c`.
 
 ## Support matrix
 
 | Provider/model family | Remote compaction           | `previous_response_id` continuity | Custom WS stream                 | Live-tested |
 |-----------------------|-----------------------------|-----------------------------------|----------------------------------|-------------|
-| `openai/*`            | Yes                         | Yes                               | Yes                              | Yes         |
-| `openai-codex/*`      | Yes                         | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
+| `openai/*`            | Yes (v2)                    | Yes                               | Yes                              | Yes         |
+| `openai-codex/*`      | Yes (v2)                    | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
+| `cliproxy/*` Responses models | Yes (`/responses/compact` v1) | No                        | No (Pi transport retained)       | Yes         |
 | Azure                 | Partial (opt-in via config) | Partial                           | No                               | No          |
 
 ## Install
@@ -55,13 +61,13 @@ https://x.com/alexisgallagher/status/2042396986327060736?s=20 .)
 Project-local (recommended):
 
 ```bash
-pi install -l git:github.com/algal/pi-openai-server-compaction
+pi install -l git:github.com/GodKimba/pi-openai-server-compaction@<commit-sha>
 ```
 
 Global:
 
 ```bash
-pi install git:github.com/algal/pi-openai-server-compaction
+pi install git:github.com/GodKimba/pi-openai-server-compaction@<commit-sha>
 ```
 
 One-shot, non-persistent:
@@ -75,13 +81,13 @@ pi -e ./src/index.ts --model openai/gpt-5.6-luna
 ## Requirements
 
 - Node `>= 22`
-- Pi `>=0.80.9 <0.81.0`
+- Pi `>=0.84.0 <0.85.0`
 - Auth/config for the model you want to use must already work in Pi
-- A supported OpenAI Responses model, e.g. `openai/gpt-5.6-sol` or `openai-codex/gpt-5.6-sol`
+- A supported direct OpenAI Responses model, or an explicitly configured model with `provider: "cliproxy"`, `api: "openai-responses"`, and a valid HTTP(S) `baseUrl`
 
 ## What it does
 
-On compaction, the extension requests Responses compaction v2 through `/v1/responses` in parallel with generating a portable Pi text summary. This gives you both:
+On compaction, the extension requests Responses compaction v2 through `/v1/responses` for direct OpenAI providers, or standard non-streaming compact-v1 through the configured CLIProxy Responses endpoint plus `/compact`. It does this in parallel with generating a portable Pi text summary. This gives you both:
 
 - **An OpenAI-native opaque compaction artifact** for high-fidelity continuity on compatible future turns
 - **A portable Pi text summary** so non-OpenAI models, session exports, forking, and tree navigation keep working
@@ -92,15 +98,15 @@ For direct `openai/*` models between compactions, the extension also:
 - Uses `previous_response_id` for live continuation when safe
 - Provides a WebSocket-backed transport path with HTTP fallback
 
-For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries.
+For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries. For eligible `cliproxy/*` models it likewise replays compact-v1 replacement history through Pi's existing Responses transport; model names alone never enable this path.
 
 ## How compaction works
 
 On Pi compaction events for supported models, the extension:
 
 1. Generates a **portable Pi text summary** (full-branch summary with fallback to Pi's built-in compaction helper)
-2. Calls `POST /v1/responses` with the conversation history, a trailing `compaction_trigger`, system prompt, tools, reasoning config, and text config
-3. Retains recent user messages and stores them with the returned opaque `compaction` item in `CompactionEntry.details.remoteCompaction`
+2. Calls direct-provider compaction v2 with a trailing `compaction_trigger`, or calls the eligible CLIProxy `/compact` endpoint with the standard compact-v1 JSON request
+3. Stores the validated opaque replacement history in `CompactionEntry.details.remoteCompaction`
 4. Persists remote compaction usage metadata when the backend returns it
 
 The compaction request mirrors the shape of surrounding normal requests (reasoning effort, text settings, tool definitions) rather than using endpoint defaults.
@@ -124,7 +130,7 @@ Users should be aware:
 
 Config is read from:
 
-- `~/.pi/agent/openai-server-compaction.json` (global)
+- `$PI_CODING_AGENT_DIR/openai-server-compaction.json` (global; defaults to `~/.pi/agent`, with Pi's own `~` expansion)
 - `.pi/openai-server-compaction.json` (project-local, takes precedence)
 
 ```json
@@ -161,10 +167,10 @@ If something goes wrong:
 
 ## Testing
 
-Smoke test (offline, verifies imports and key algorithms):
+Focused validation (typecheck, offline smoke, package contents, dependency audit):
 
 ```bash
-npm run smoke
+npm test && npm pack --dry-run && npm audit
 ```
 
 Live end-to-end test (requires working Pi + OpenAI auth):
