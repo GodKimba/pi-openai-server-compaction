@@ -109,6 +109,8 @@ On Pi compaction events for supported models, the extension:
 3. Stores the validated opaque replacement history in `CompactionEntry.details.remoteCompaction`
 4. Persists remote compaction usage metadata when the backend returns it
 
+The first remote compaction request is built from Pi's compaction-aware active context: the latest Pi summary plus its kept and trailing messages. It does not replay raw messages already replaced by an earlier local compaction. After a remote artifact exists, the existing persisted replacement-history continuation path remains authoritative.
+
 The compaction request mirrors the shape of surrounding normal requests (reasoning effort, text settings, tool definitions) rather than using endpoint defaults.
 
 ## Safety
@@ -197,7 +199,7 @@ PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai-codex/gpt-5.6-sol npm run test:liv
 | File                                       | Purpose                                                           |
 |--------------------------------------------|-------------------------------------------------------------------|
 | `src/index.ts`                             | Extension wiring, compaction hook, lifecycle handling             |
-| `src/remote-compaction.ts`                 | Responses compaction v2 integration and replacement-history handling |
+| `src/remote-compaction.ts`                 | Responses compaction and replacement-history handling             |
 | `src/openai-ws-stream.ts`                  | WebSocket continuation path                                       |
 | `src/openai-ws-connection.ts`              | WebSocket connection manager                                      |
 | `src/openai.ts`                            | Model detection and payload patching                              |

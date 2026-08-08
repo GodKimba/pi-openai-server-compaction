@@ -470,6 +470,10 @@ export function messagesToResponseItems(messages: AgentMessage[]): ResponseItem[
   return messages.flatMap((message) => messageToResponseItems(message));
 }
 
+export function activeContextMessagesToResponseItems(messages: AgentMessage[]): ResponseItem[] {
+  return messagesToResponseItems(convertToLlm(messages));
+}
+
 function cloneResponseItem(item: ResponseItem): ResponseItem {
   return JSON.parse(JSON.stringify(item)) as ResponseItem;
 }
@@ -1069,6 +1073,7 @@ export function buildRemoteCompactionDetails(
     return {
       version: 1,
       provider: "openai-responses-compact",
+      implementation: "responses_compact_v1",
       modelKey: modelKey(model),
       replacementHistory,
       ...(usage ? { usage } : {}),
