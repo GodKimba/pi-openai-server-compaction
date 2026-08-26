@@ -4,9 +4,10 @@
 
 1. Verify supported OpenAI-compatible Responses sessions use the expected continuity path:
    - direct `openai/*` requests use `store: true`, `context_management`, and `previous_response_id` when safe
-   - direct-provider and OpenAI Codex compaction v2 use `/v1/responses` with a trailing `compaction_trigger`
+   - direct OpenAI, OpenAI Codex, and eligible CLIProxy compaction all use compaction v2: `/v1/responses` with a trailing `compaction_trigger`
+   - no code path constructs the removed `/v1/responses/compact` endpoint
    - OpenAI Codex keeps its built-in transport between compactions
-   - the configured CLIProxy `/compact` endpoint for eligible compact-v1 models
+   - eligible CLIProxy models keep Pi's Responses transport between compactions
 2. Verify Pi remains usable:
    - `/model`
    - `/tree`
@@ -36,8 +37,8 @@
 - Inspect the session JSONL and confirm `details.remoteCompaction.replacementHistory` exists.
 - Continue the session and confirm later compatible turns still behave coherently.
 - If the branch already contains a local Pi compaction, confirm the first remote request includes its latest summary plus kept and trailing messages exactly once, and excludes the superseded raw history.
-- For compaction v2, confirm `details.remoteCompaction.implementation` is `responses_compaction_v2`, and replacement history ends with an opaque `compaction` item while retaining only the recent user-message budget outside it.
-- For eligible CLIProxy compact v1, confirm `details.remoteCompaction.implementation` is `responses_compact_v1`, and replacement history contains exactly one non-empty opaque `compaction` or `compaction_summary` item.
+- Confirm `details.remoteCompaction.implementation` is `responses_compaction_v2` for every supported backend, and replacement history ends with an opaque `compaction` item while retaining only the recent user-message budget outside it.
+- Sessions recorded before compact v1 was removed still carry `responses_compact_v1` details; confirm those keep replaying rather than being rewritten.
 
 ### 4. `/model` safety
 - After remote compaction, switch to another model with `/model`.
@@ -70,17 +71,32 @@ npm run smoke
 
 The offline harness in `scripts/smoke.mjs` covers:
 - initial remote input derived from Pi's active compacted context without duplicate or superseded history
-- successful compact-v1 persistence of exactly one non-empty opaque artifact
+- CLIProxy compaction resolving to `/v1/responses` (never `/compact`), with the compaction-v2 request shape and proxy-appropriate headers
+- successful persistence of exactly one non-empty opaque artifact, marked `responses_compaction_v2`
 - replacement-history reconstruction after session reload/resume
+- the success-to-404 compatibility transition: a 404 is surfaced with its status, is not retried in place, leaves persisted history untouched, and closes the eligibility gate
+- gate policy: route-level failures disable immediately, other failures after two consecutive failures, aborts do not count, success resets
+- the removed compact-v1 helpers staying removed, and no file under `src/` constructing that URL
+- end-to-end wiring: driving the real `session_before_compact` handler, one 404 closes the gate, announces itself once, and the next compaction issues no further remote request
 
 ## Automated live test
 
 ```bash
-cd /home/algal/gits/pi-openai-server-compaction
 node --experimental-strip-types ./tests/live/openai-compaction-rpc-live.ts
 PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai/gpt-5.6-luna node --experimental-strip-types ./tests/live/openai-compaction-rpc-live.ts
 PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai-codex/gpt-5.6-sol node --experimental-strip-types ./tests/live/openai-compaction-rpc-live.ts
 ```
+
+The harness also accepts a CLIProxy Responses model, which drives the same
+compaction-v2 assertions through the proxy:
+
+```bash
+PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=cliproxy/gpt-5.6-sol node --experimental-strip-types ./tests/live/openai-compaction-rpc-live.ts
+```
+
+Its `/model` round-trip scenarios need a second model from the same provider, so
+a single-model CLIProxy configuration only reaches the compaction, recall, and
+resume scenarios.
 
 The automated live harness lives in `tests/live/openai-compaction-rpc-live.ts`.
 

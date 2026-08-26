@@ -11,6 +11,10 @@ The validated compaction request uses the normal Responses endpoint with a trail
 
 Validated continuity on both providers includes same-process recall, fork safety, resume/reload, and model-switch round trips. The direct OpenAI suite also includes reduced-plaintext replay; that test recovered a generated secret absent from all visible retained history and from the portable Pi summary.
 
+`cliproxy/*` Responses models now use this same protocol, but are **not** covered
+by that live evidence. See [CLIProxy Responses compaction v2](#cliproxy-responses-compaction-v2)
+for what has and has not been proven for that backend.
+
 ## Controlled product-defaults benchmark
 
 A retained GPT-5.6 Sol benchmark compared Pi 0.80.9's actual default
@@ -45,7 +49,129 @@ superseded by the methodological note in:
 - `benchmarks/native-vs-text/REPORT.md`
 - `benchmarks/native-vs-text/README.md`
 
-## Legacy `/responses/compact` validation
+## CLIProxy Responses compaction v2
+
+`cliproxy/*` Responses models previously used the standard non-streaming
+`POST /v1/responses/compact` endpoint. That selection is removed. It is not a
+preference: the route stopped working, and calling it damages the account pool
+it is proxying.
+
+### The compatibility transition
+
+The compact-v1 request succeeded repeatedly through 2026-08-12 14:21 and
+returned 404 from 15:49 the same day onward, with no later success across the
+following two weeks. Nothing on the client changed at that boundary.
+
+### Where the 404 comes from
+
+CLIProxyAPI is not the missing piece. At the release running locally,
+`7.2.128`:
+
+- `internal/api/server_routes.go` still registers `POST /v1/responses/compact`
+  and `POST /backend-api/codex/responses/compact`
+- `sdk/api/handlers/openai/openai_responses_handlers.go` still implements the
+  non-streaming `Compact` handler
+- `internal/runtime/executor/codex_executor_execute.go` still dispatches
+  `Alt == "responses/compact"` to `<codex base>/responses/compact` and wraps a
+  non-2xx upstream status with `newCodexStatusErr`
+
+The 404 therefore originates upstream of the proxy. Codex's own client agrees on
+the direction of travel: `codex-rs/core/src/compact_remote.rs` refers to
+`/responses/compact` as "Legacy", and `codex-rs/core/src/tasks/compact.rs`
+selects the compaction-trigger v2 path for OpenAI providers.
+
+### Why it broke ordinary turns, not just compaction
+
+`sdk/cliproxy/auth/conductor_cooldown.go` treats an upstream 404 as a
+credential-level fault: status 404 sets `NextRetryAfter` to 12 hours with
+`not_found` and suspends the model on that auth. The conductor then retries the
+next eligible credential, which fails the same way. One `/compact` therefore
+walks the whole Codex pool into cooldown, and later *ordinary* `/v1/responses`
+turns fail with `503 auth_unavailable: no auth available`. The count_tokens
+404 exemption in `conductor_execution.go` does not apply to this path.
+
+That is the acceptance-criterion failure this change removes: the extension no
+longer constructs `/responses/compact` for any provider, so the initiating
+`/compact` can no longer cool the pool.
+
+### What replaced it
+
+`cliproxy/*` compaction now uses the same Responses compaction v2 protocol the
+package already owned for `openai/*` and `openai-codex/*`: an ordinary
+`POST <baseUrl>/responses` with a trailing `compaction_trigger`, read as SSE,
+requiring exactly one `compaction` output item. CLIProxyAPI forwards that as a
+normal Responses request through the same path the captain's ordinary turns
+already use.
+
+Source facts that make this the right target, at `7.2.128`:
+
+- `internal/translator/codex/openai/responses/codex_openai-responses_request.go`
+  passes `input` items through unchanged apart from system-to-developer role
+  normalization, and forces exactly the fields the v2 body already sets
+  (`stream:true`, `store:false`, `parallel_tool_calls:true`,
+  `include:["reasoning.encrypted_content"]`)
+- `codex_openai-responses_response.go` passes streaming events back through
+  essentially verbatim, so `response.output_item.done` carrying a `compaction`
+  item and `response.completed` reach the client
+- `openai_responses_signature.go` sanitizes only `reasoning` input items, so
+  `compaction` and `compaction_trigger` items are untouched
+- `codex_executor_request.go` forwards a downstream `X-Codex-Beta-Features`
+  header upstream, so `remote_compaction_v2` still reaches the Codex backend
+- the reasoning-replay cache is enabled only for Claude-format sources
+  (`codex_executor_reasoning.go`), so it does not interfere here
+
+Headers for this path deliberately carry only the downstream proxy credential
+and the session identity the proxy's affinity selector reads. The proxy chooses
+the account and injects the real Codex authorization, account id, originator,
+and user agent itself, so the extension does not decode the loopback credential
+as a Codex JWT and does not pin an account.
+
+### Offline validation
+
+`npm test`, `npm pack --dry-run`, and `npm audit` pass. `scripts/smoke.mjs`
+adds focused coverage for the transition:
+
+- CLIProxy compaction resolves to `http://127.0.0.1:8317/v1/responses`, and the
+  captured request URL never ends in `/compact`
+- the request body is the compaction-v2 shape with a trailing
+  `compaction_trigger`
+- CLIProxy headers carry the proxy bearer, `session_id`,
+  `x-client-request-id`, and `x-codex-beta-features`, and omit
+  `chatgpt-account-id`, `originator`, `user-agent`, and the Codex
+  installation/window identifiers
+- a synthetic 404 is raised as a `RemoteCompactionError` carrying its status, is
+  attempted exactly once, leaves the persisted session branch byte-identical,
+  and closes the eligibility gate
+- the removed compact-v1 helpers stay removed, and no file under `src/`
+  constructs the `/responses/compact` URL
+- driving the real `session_before_compact` handler end to end: one 404 closes
+  the gate, is announced exactly once, and the next compaction issues no further
+  remote request
+- persisted `responses_compact_v1` artifacts from older sessions still parse and
+  still replay
+
+### Live canary status
+
+**Not yet run.** At the time of this change every Codex credential in the local
+pool was still in the `auth_unavailable` state left by the earlier compact-v1
+404 cascade, so an ordinary `cliproxy/gpt-5.6-sol` turn failed with
+`503 auth_unavailable: no auth available` before any compaction could be
+attempted. That is the pre-existing incident, not a result of this change, and
+it is itself direct confirmation of the cooldown mechanism described above.
+
+Consequently this change is validated by source inspection and offline
+regression only. Remote compaction through CLIProxyAPI is **not** claimed to be
+live-proven. When the pool recovers, the intended canary is a disposable Pi
+profile driving `cliproxy/gpt-5.6-sol` with a synthetic marker, checking:
+ordinary response, `responses_compaction_v2` details with exactly one non-empty
+opaque artifact, persistence into the session JSONL, same-process recall, and
+resumed-process recall. Until that passes, treat CLIProxy remote compaction as
+implemented and offline-verified, not field-verified.
+
+## Legacy `/responses/compact` validation (historical)
+
+This section records the original direct-OpenAI probe. It is retained as
+history. It is **not** a current compatibility claim: see the transition above.
 
 Before the v2 migration, a direct manual probe against the OpenAI API succeeded:
 
