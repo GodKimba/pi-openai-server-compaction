@@ -43,18 +43,54 @@ https://x.com/alexisgallagher/status/2042396986327060736?s=20 .)
 > Recommended rollout: install project-local first, use for a week, keep rollback easy.
 >
 > Pi 0.84 compatibility is based on upstream Algal commit
-> `8a3de2f3b0c178fdd6f73f2f94172dfc3943e466`; the CLIProxy compact-v1 path is
-> restored from Algal's original implementation at
-> `fcc4cd34f714df1667dcdde59b681fc9cf656a7c`.
+> `8a3de2f3b0c178fdd6f73f2f94172dfc3943e466`.
+>
+> **Compact v1 is gone.** Every supported backend now uses Responses
+> compaction v2. The legacy `POST /v1/responses/compact` route is no longer
+> reachable through CLIProxyAPI, and calling it is actively harmful — see
+> [Why compact v1 was removed](#why-compact-v1-was-removed).
 
 ## Support matrix
 
-| Provider/model family | Remote compaction           | `previous_response_id` continuity | Custom WS stream                 | Live-tested |
-|-----------------------|-----------------------------|-----------------------------------|----------------------------------|-------------|
-| `openai/*`            | Yes (v2)                    | Yes                               | Yes                              | Yes         |
-| `openai-codex/*`      | Yes (v2)                    | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
-| `cliproxy/*` Responses models | Yes (`/responses/compact` v1) | No                        | No (Pi transport retained)       | Yes         |
-| Azure                 | Partial (opt-in via config) | Partial                           | No                               | No          |
+| Provider/model family | Remote compaction | `previous_response_id` continuity | Custom WS stream                 | Live-tested |
+|-----------------------|-------------------|-----------------------------------|----------------------------------|-------------|
+| `openai/*`            | Yes (v2)          | Yes                               | Yes                              | Yes         |
+| `openai-codex/*`      | Yes (v2)          | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
+| `cliproxy/*` Responses models | Yes (v2)  | No                                | No (Pi transport retained)       | Yes (except `/model` round-trip) |
+| Azure                 | Partial (opt-in via config) | Partial                 | No                               | No          |
+
+## Why compact v1 was removed
+
+Earlier releases sent `cliproxy/*` compaction to the standard non-streaming
+`POST /v1/responses/compact` endpoint. That worked when it was written, and it
+stopped working on 2026-08-12: the same request that had been succeeding began
+returning 404 and never succeeded again.
+
+CLIProxyAPI is not the missing piece. Release `7.2.128` still registers the
+route (`internal/api/server_routes.go`) and still forwards it through its Codex
+executor to `<codex base>/responses/compact`. The 404 comes from the Codex
+upstream, which has moved to the compaction-v2 protocol; Codex's own client now
+labels that path "Legacy".
+
+The failure mode is worse than a failed compaction. CLIProxyAPI treats an
+upstream 404 as a credential-level fault: it marks that auth `not_found`, puts
+it in a 12-hour cooldown, suspends the model on it, and retries the next
+credential — so a single `/compact` walks the whole pool into cooldown, and
+later *ordinary* turns fail with `503 auth_unavailable: no auth available`.
+
+So the extension no longer builds that URL at all, for any provider. `cliproxy/*`
+compaction now takes the same Responses compaction v2 path already used for
+`openai/*` and `openai-codex/*`: an ordinary `POST /v1/responses` with a trailing
+`compaction_trigger`, which CLIProxyAPI forwards as a normal Responses request.
+Sessions that already contain a compact-v1 artifact keep replaying it; only the
+outbound protocol changed.
+
+This is live-validated against the real local pool: compaction, artifact
+persistence, same-process recall, resumed-process recall, and an ordinary turn
+after compaction all pass, with every observed request going to
+`POST /v1/responses` and none to any `/compact` path. The one uncovered
+scenario is the `/model` round-trip, which needs a second model from the same
+provider. See [VALIDATION.md](VALIDATION.md).
 
 ## Install
 
@@ -87,7 +123,7 @@ pi -e ./src/index.ts --model openai/gpt-5.6-luna
 
 ## What it does
 
-On compaction, the extension requests Responses compaction v2 through `/v1/responses` for direct OpenAI providers, or standard non-streaming compact-v1 through the configured CLIProxy Responses endpoint plus `/compact`. It does this in parallel with generating a portable Pi text summary. This gives you both:
+On compaction, the extension requests Responses compaction v2 through the backend's own `/v1/responses` endpoint — direct OpenAI, OpenAI Codex, and configured CLIProxy Responses models all take that one path. It does this in parallel with generating a portable Pi text summary. This gives you both:
 
 - **An OpenAI-native opaque compaction artifact** for high-fidelity continuity on compatible future turns
 - **A portable Pi text summary** so non-OpenAI models, session exports, forking, and tree navigation keep working
@@ -98,14 +134,22 @@ For direct `openai/*` models between compactions, the extension also:
 - Uses `previous_response_id` for live continuation when safe
 - Provides a WebSocket-backed transport path with HTTP fallback
 
-For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries. For eligible `cliproxy/*` models it likewise replays compact-v1 replacement history through Pi's existing Responses transport; model names alone never enable this path.
+For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries. For eligible `cliproxy/*` models it likewise replays replacement history through Pi's existing Responses transport; model names alone never enable this path, and no provider override or WebSocket transport is registered for `cliproxy`.
+
+For CLIProxy models the compaction request carries only the downstream proxy
+credential, the Pi session identity the proxy's affinity selector reads
+(`session_id`, `x-client-request-id`, and `prompt_cache_key`), and the
+`x-codex-beta-features` value the proxy forwards upstream. The proxy picks the
+account and injects its own Codex authorization, account id, originator, and
+user agent, so the extension never derives a ChatGPT account id from the proxy
+key and never pins an account.
 
 ## How compaction works
 
 On Pi compaction events for supported models, the extension:
 
 1. Generates a **portable Pi text summary** (full-branch summary with fallback to Pi's built-in compaction helper)
-2. Calls direct-provider compaction v2 with a trailing `compaction_trigger`, or calls the eligible CLIProxy `/compact` endpoint with the standard compact-v1 JSON request
+2. Streams a normal Responses request with a trailing `compaction_trigger` and requires exactly one `compaction` output item
 3. Stores the validated opaque replacement history in `CompactionEntry.details.remoteCompaction`
 4. Persists remote compaction usage metadata when the backend returns it
 
@@ -118,6 +162,24 @@ The compaction request mirrors the shape of surrounding normal requests (reasoni
 The extension clears live continuation state on: session start/reload/resume, switch/fork, tree navigation, compaction completion, model selection, and shutdown.
 
 Remote compaction history is only replayed for compatible models. Cross-model turns are filtered from reconstructed replay history to prevent contamination after resume or tree navigation.
+
+### Remote compaction eligibility gate
+
+A failed remote compaction is a contained fallback, never a licence to keep
+hitting a backend that is not answering. The extension tracks consecutive
+remote-compaction failures per model for the lifetime of the Pi process:
+
+- a **route-level** status (`404`, `405`, `410`, `501`) disables remote
+  compaction for that model immediately, on the first occurrence
+- any other failure is tolerated until two consecutive failures
+- an aborted compaction does not count
+- a success resets the counter
+
+While remote compaction is disabled the extension still produces Pi's portable
+text summary, so `/compact` keeps working; it just stops issuing the remote
+call. Pi announces the transition once. Persisted replacement history is never
+touched by a failed attempt, so an existing artifact keeps replaying. Restarting
+Pi re-enables the attempt.
 
 ## Data handling
 

@@ -35,6 +35,8 @@ import {
   buildToolsPayload,
   callRemoteCompactionEndpoint,
   generateBestEffortLocalSummary,
+  isAbortedRemoteCompactionFailure,
+  isRouteLevelRemoteCompactionFailure,
   messageToResponseItems,
   normalizeResponseItemsForPrompt,
   reconstructRemoteCompactionStateFromBranch,
@@ -47,6 +49,9 @@ import {
   getContinuationState,
   getRemoteCompactionState,
   getResponsesRequestShapeState,
+  isRemoteCompactionAllowed,
+  recordRemoteCompactionFailure,
+  recordRemoteCompactionSuccess,
   setContinuationState,
   setRemoteCompactionState,
   setResponsesRequestShapeState,
@@ -232,19 +237,32 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     const reasoning = observedRequestShape?.reasoning ?? fallbackReasoning;
     const text = observedRequestShape?.text;
 
+    const localSummaryPromise = generateBestEffortLocalSummary({
+      preparation: event.preparation,
+      messages: fullBranchMessages,
+      model,
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      customInstructions: event.customInstructions,
+      signal: event.signal,
+      thinkingLevel,
+      firstKeptEntryId: event.preparation.firstKeptEntryId,
+      tokensBefore: event.preparation.tokensBefore,
+    });
+
+    // A backend whose compaction endpoint already failed in this process is not
+    // retried: the local portable summary is the contained fallback.
+    const compactionModelKey = modelKey(model);
+    if (!isRemoteCompactionAllowed(compactionModelKey)) {
+      const localOnly = await localSummaryPromise.then(
+        (value) => value,
+        () => undefined,
+      );
+      return localOnly ? { compaction: localOnly } : undefined;
+    }
+
     const [localResult, remoteResult] = await Promise.allSettled([
-      generateBestEffortLocalSummary({
-        preparation: event.preparation,
-        messages: fullBranchMessages,
-        model,
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        customInstructions: event.customInstructions,
-        signal: event.signal,
-        thinkingLevel,
-        firstKeptEntryId: event.preparation.firstKeptEntryId,
-        tokensBefore: event.preparation.tokensBefore,
-      }),
+      localSummaryPromise,
       callRemoteCompactionEndpoint({
         model,
         apiKey: auth.apiKey,
@@ -261,15 +279,38 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     ]);
 
     if (remoteResult.status !== "fulfilled") {
+      const aborted = event.signal.aborted || isAbortedRemoteCompactionFailure(remoteResult.reason);
+      const message =
+        remoteResult.reason instanceof Error
+          ? remoteResult.reason.message
+          : String(remoteResult.reason);
+      const gate = aborted
+        ? undefined
+        : recordRemoteCompactionFailure({
+            modelKey: compactionModelKey,
+            routeLevel: isRouteLevelRemoteCompactionFailure(remoteResult.reason),
+            reason: message,
+          });
+
+      // Surface the boundary the user actually needs: remote compaction just
+      // stopped being attempted, or there is no portable summary either.
+      if (!aborted && ctx.hasUI && (gate?.justDisabled || localResult.status !== "fulfilled")) {
+        const suffix = gate?.justDisabled
+          ? " Remote compaction is now disabled for this model until Pi restarts; Pi's portable summary is used instead."
+          : "";
+        ctx.ui.notify(
+          `OpenAI remote compaction failed; falling back to default compaction. ${message}${suffix}`,
+          "warning",
+        );
+      }
+
       if (localResult.status === "fulfilled") {
         return { compaction: localResult.value };
       }
-      if (!event.signal.aborted && ctx.hasUI) {
-        const message = remoteResult.reason instanceof Error ? remoteResult.reason.message : String(remoteResult.reason);
-        ctx.ui.notify(`OpenAI remote compaction failed; falling back to default compaction. ${message}`, "warning");
-      }
       return undefined;
     }
+
+    recordRemoteCompactionSuccess(compactionModelKey);
 
     const remoteDetails = buildRemoteCompactionDetails(
       model,

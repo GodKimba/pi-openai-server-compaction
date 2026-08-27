@@ -3,9 +3,16 @@
 This changelog intentionally starts at **0.1.0**.
 
 ## Unreleased
+- remove the legacy `POST /v1/responses/compact` (compact v1) selection entirely; the Codex upstream behind CLIProxyAPI began answering 404 on 2026-08-12 after succeeding until that day, and CLIProxyAPI charges an upstream 404 against the selected credential with a 12-hour `not_found` cooldown, so one `/compact` walked the whole pool into cooldown and made later ordinary turns fail with `503 auth_unavailable`
+- route `cliproxy/*` Responses compaction through the already-owned Responses compaction v2 path instead: an ordinary `POST <baseUrl>/responses` with a trailing `compaction_trigger`
+- send CLIProxy compaction headers that carry only the downstream proxy credential, the session identity its affinity selector reads, and the forwarded `x-codex-beta-features` value; never derive a ChatGPT account id from the proxy credential and never write Codex installation state for this path
+- persist `cliproxy/*` artifacts as `responses_compaction_v2` while keeping existing `responses_compact_v1` session entries readable and replayable
+- add a per-model remote-compaction eligibility gate: a route-level status (`404`/`405`/`410`/`501`) disables remote compaction for that model for the rest of the process on first occurrence, other failures after two consecutive failures, aborts do not count, and success resets. Pi keeps producing its portable summary while the gate is closed
+- stop discarding a successful compaction artifact when the model definition has no usable pricing metadata
+- live-validate the CLIProxy path end to end against the real pool through a recording reverse proxy: compaction v2 artifact, session persistence, same-process recall, resumed-process recall, and an ordinary turn after compaction all pass, with zero requests to any `/compact` path
 - target Pi 0.80.9 and the `@earendil-works/*` package namespace
 - align compaction fallback, Responses payload normalization, Codex identity headers, and WebSocket behavior with Pi 0.80.9
-- replace the legacy direct-provider `/responses/compact` call with Codex's current Responses compaction v2 protocol while retaining compact v1 for eligible CLIProxy models
+- replace the legacy direct-provider `/responses/compact` call with Codex's current Responses compaction v2 protocol (this line described an interim state in which eligible CLIProxy models still used compact v1; that path is now removed, see above)
 - stream a normal Responses request with a trailing `compaction_trigger` and persist the returned `compaction` item
 - retain recent user messages with the same 20K-token budget shape used by Codex while continuing to read older version 1 session artifacts
 - add a reproducible native-vs-text compaction benchmark, retained GPT-5.6 Sol evidence, and a standalone report

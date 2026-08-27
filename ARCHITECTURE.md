@@ -22,7 +22,7 @@ In practice, that means keeping two representations of context alive at once:
 
 2. **OpenAI-native representation**
    - for direct `openai/*`: `previous_response_id` for live continuation when safe
-   - for supported backends: opaque replacement history returned by direct-provider compaction v2 or eligible CLIProxy compact v1
+   - for supported backends: opaque replacement history returned by Responses compaction v2
    - used only for compatible future OpenAI, OpenAI Codex, or CLIProxy Responses turns
 
 ## High-level flow
@@ -50,9 +50,7 @@ In practice, that means keeping two representations of context alive at once:
    - generate a **portable local summary**
    - request remote compaction through the transport selected for the active model
 4. Before a remote artifact exists, `src/index.ts` derives remote input from Pi's compaction-aware active-context projection. This includes the latest local summary plus kept and trailing messages once, without replaying the raw history that summary replaced. Once an artifact exists, reconstructed replacement history is the input source instead.
-5. `src/remote-compaction.ts` converts that input to OpenAI Responses items and either:
-   - appends a `compaction_trigger` and streams compaction v2 from `/v1/responses`, or
-   - sends the standard non-streaming compact-v1 request to an eligible CLIProxy endpoint
+5. `src/remote-compaction.ts` converts that input to OpenAI Responses items, appends a `compaction_trigger`, and streams compaction v2 from the backend's own `/v1/responses` endpoint. Direct OpenAI, OpenAI Codex, and CLIProxy Responses models all use this one protocol; only the endpoint and headers differ.
 6. If remote compaction succeeds, the returned opaque replacement history is stored in:
    - `CompactionEntry.details.remoteCompaction`
 7. Pi still keeps a text summary so the session remains understandable and portable.
@@ -75,7 +73,7 @@ Persisted state lives in the session JSONL file and survives reloads:
 - Pi `compaction` entries
 - `compaction.details.remoteCompaction`
 
-The persisted `remoteCompaction` payload is the important bridge to Codex-style behavior. Version 2 contains retained user messages plus the opaque `compaction` item returned by Responses compaction v2. Eligible CLIProxy models persist compact-v1 history with `implementation: "responses_compact_v1"`; older version 1 entries without that marker remain readable for session compatibility.
+The persisted `remoteCompaction` payload is the important bridge to Codex-style behavior. New entries are always version 2: retained user messages plus the opaque `compaction` item returned by Responses compaction v2, marked `implementation: "responses_compaction_v2"`. Version 1 entries written by the removed compact-v1 path remain readable and replayable so older sessions keep working.
 
 ### Runtime-only state
 
@@ -113,8 +111,10 @@ The Codex-style compaction layer.
 
 Responsibilities:
 - convert Pi messages to OpenAI Responses-style input items
-- call `POST /v1/responses` with a trailing `compaction_trigger`, or the eligible CLIProxy compact-v1 endpoint
-- parse the selected transport and require exactly one non-empty opaque artifact
+- call `POST /v1/responses` with a trailing `compaction_trigger`
+- resolve the per-backend endpoint and headers (direct OpenAI, OpenAI Codex, CLIProxy)
+- parse the SSE stream and require exactly one non-empty opaque artifact
+- classify failures so the eligibility gate can distinguish a missing route from a transient error
 - retain recent user messages using Codex's 20K-token budget shape
 - build portable text summaries
 - rebuild replayable remote state from persisted compaction entries
@@ -163,9 +163,11 @@ Loads and normalizes configuration from:
 
 ### `src/state.ts`
 
-Stores ephemeral per-session runtime state only.
+Stores ephemeral runtime state only: per-session continuation, reconstructed remote replay state, observed request shape, and the per-model remote-compaction eligibility gate.
 
 It does **not** persist remote compaction artifacts itself. Those live in Pi session entries.
+
+The eligibility gate is keyed by model rather than by session, and deliberately survives session switch/fork/tree so a backend already proven unusable is not retried on the next session. It lives only for the process.
 
 ### `src/custom-stream.ts`
 
@@ -186,6 +188,7 @@ Important safety rules:
 - reconstructed remote history only replays post-compaction turns whose assistant completions match the compaction model, avoiding cross-model pollution after resume/tree reload
 - live `previous_response_id` state is cleared on key session/model lifecycle boundaries
 - HTTP fallback remains available if the WS path is unavailable or unsafe
+- a failed remote compaction never mutates persisted history, and a route-level failure (`404`/`405`/`410`/`501`) disables further remote compaction attempts for that model in this process; other failures are tolerated until two consecutive failures. Behind a multi-account proxy this matters: an upstream 404 is charged against the selected credential, so repeating the call walks the whole pool into cooldown and breaks later ordinary turns.
 
 ## Why both local summary and remote compaction exist
 
@@ -209,7 +212,7 @@ So the package is intentionally hybrid:
 
 - `npm run smoke`
 
-Verifies imports/loadability and focused offline regressions, including active-context projection, opaque compact-v1 persistence, and reconstruction after resume.
+Verifies imports/loadability and focused offline regressions, including active-context projection, the CLIProxy compaction-v2 request shape, opaque artifact persistence, reconstruction after resume, and the eligibility gate that keeps a failed compaction route from being retried.
 
 ### Live end-to-end test
 

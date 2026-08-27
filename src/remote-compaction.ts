@@ -106,21 +106,54 @@ export type RemoteCompactionResult = {
   usage?: RemoteCompactionUsageSnapshot;
 };
 
+/**
+ * Number of consecutive non-route remote compaction failures tolerated for one
+ * model before the extension stops attempting remote compaction in this
+ * process. Route-level failures disable it on the first occurrence.
+ */
+export const REMOTE_COMPACTION_FAILURE_LIMIT = 2;
+
+/** Failure carrying the upstream HTTP status so callers can classify it. */
+export class RemoteCompactionError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "RemoteCompactionError";
+    this.status = status;
+  }
+}
+
+/**
+ * A route-level status means the compaction endpoint is not there for this
+ * backend. Repeating such a call is never useful and, behind CLIProxyAPI, is
+ * actively harmful: an upstream 404 puts the selected Codex credential into a
+ * long `not_found` cooldown and the conductor then burns through every other
+ * credential in the pool, so later ordinary turns fail with `auth_unavailable`.
+ */
+export function isRouteLevelRemoteCompactionFailure(error: unknown): boolean {
+  if (!(error instanceof RemoteCompactionError)) return false;
+  return error.status === 404 || error.status === 405 || error.status === 410 || error.status === 501;
+}
+
+/** Aborted compaction is the user or Pi cancelling, not a backend failure. */
+export function isAbortedRemoteCompactionFailure(error: unknown): boolean {
+  if (error instanceof RemoteCompactionError) return false;
+  if (typeof error !== "object" || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
 function normalizeBaseUrl(baseUrl: string | undefined, fallback: string): string {
   const trimmed = baseUrl?.trim();
   if (!trimmed) return fallback;
   return trimmed.replace(/\/+$/, "");
 }
 
-function resolveCliProxyCompactEndpoint(model: Model<any>): string {
+function resolveCliProxyResponsesEndpoint(model: Model<any>): string {
   const baseUrl = normalizeBaseUrl(typeof model.baseUrl === "string" ? model.baseUrl : undefined, "");
-  if (baseUrl.endsWith("/responses")) return `${baseUrl}/compact`;
-  return baseUrl.endsWith("/v1") ? `${baseUrl}/responses/compact` : `${baseUrl}/v1/responses/compact`;
-}
-
-export function remoteCompactionV1EndpointUrl(model: Model<any>): string {
-  if (isCliProxyResponsesModel(model)) return resolveCliProxyCompactEndpoint(model);
-  throw new Error("Remote compaction v1 is not supported for this model.");
+  if (baseUrl.endsWith("/responses")) return baseUrl;
+  return baseUrl.endsWith("/v1") ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`;
 }
 
 function resolveDirectOpenAIResponsesEndpoint(model: Model<any>): string {
@@ -142,6 +175,9 @@ export function remoteCompactionV2EndpointUrl(model: Model<any>): string {
   }
   if (isOpenAICodexResponsesModel(model)) {
     return resolveCodexResponsesEndpoint(model);
+  }
+  if (isCliProxyResponsesModel(model)) {
+    return resolveCliProxyResponsesEndpoint(model);
   }
   throw new Error("Remote compaction v2 is not supported for this model.");
 }
@@ -222,22 +258,6 @@ function applyProviderHeaderOverrides(
   return Object.fromEntries(headers.entries());
 }
 
-export function buildRemoteCompactionV1Headers(params: {
-  apiKey: string;
-  headers?: ProviderHeaders;
-  sessionId?: string;
-}): Record<string, string> {
-  return applyProviderHeaderOverrides(
-    {
-      authorization: `Bearer ${params.apiKey}`,
-      accept: "application/json",
-      "content-type": "application/json",
-      ...(params.sessionId ? { session_id: params.sessionId } : {}),
-    },
-    params.headers,
-  );
-}
-
 function withRemoteCompactionV2Feature(headers: Record<string, string>): Record<string, string> {
   const configuredFeatures = Object.entries(headers)
     .find(([name]) => name.toLowerCase() === "x-codex-beta-features")?.[1]
@@ -254,12 +274,45 @@ function withRemoteCompactionV2Feature(headers: Record<string, string>): Record<
   };
 }
 
+/**
+ * CLIProxy compaction headers carry the downstream proxy credential plus the
+ * session identity its affinity selector reads, and nothing else. The proxy
+ * chooses the upstream account and injects the real Codex authorization,
+ * account id, originator, and user agent itself, so synthesizing Codex identity
+ * here would either be wrong or fail: the proxy credential is not a Codex JWT.
+ * The beta-feature header is forwarded upstream unchanged, so compaction v2 is
+ * still requested through the proxy.
+ */
+function buildCliProxyRemoteCompactionHeaders(params: {
+  apiKey: string;
+  headers?: ProviderHeaders;
+  sessionId?: string;
+}): Record<string, string> {
+  return withRemoteCompactionV2Feature({
+    ...applyProviderHeaderOverrides(
+      {
+        authorization: `Bearer ${params.apiKey}`,
+        ...(params.sessionId
+          ? { session_id: params.sessionId, "x-client-request-id": params.sessionId }
+          : {}),
+      },
+      params.headers,
+    ),
+    accept: "text/event-stream",
+    "content-type": "application/json",
+  });
+}
+
 export function buildRemoteCompactionHeaders(params: {
   model: Model<any>;
   apiKey: string;
   headers?: ProviderHeaders;
   sessionId?: string;
 }): Record<string, string> {
+  if (isCliProxyResponsesModel(params.model)) {
+    return buildCliProxyRemoteCompactionHeaders(params);
+  }
+
   const codexIdentityHeaders = buildCodexIdentityHeaders(params.sessionId);
   const commonHeaders = withRemoteCompactionV2Feature({
     ...applyProviderHeaderOverrides(
@@ -833,7 +886,12 @@ function extractRemoteCompactionUsage(model: Model<any>, value: unknown): Remote
     totalTokens,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-  calculateCost(model, usage);
+  try {
+    calculateCost(model, usage);
+  } catch {
+    // Proxy-backed model definitions frequently omit pricing. Missing cost
+    // metadata must not discard an otherwise successful compaction artifact.
+  }
   return usage;
 }
 
@@ -872,48 +930,6 @@ function parseRemoteCompactionUsageSnapshot(value: unknown): RemoteCompactionUsa
       total: 0,
     },
   };
-}
-
-export function buildRemoteCompactionV1RequestBody(params: {
-  model: Model<any>;
-  input: ResponseItem[];
-  instructions?: string;
-  tools: Record<string, unknown>[];
-  parallelToolCalls: boolean;
-  reasoning?: ResponsesReasoningConfig;
-  text?: ResponsesTextConfig;
-}): Record<string, unknown> {
-  return {
-    model: params.model.id,
-    input: params.input,
-    instructions: params.instructions,
-    tools: params.tools,
-    parallel_tool_calls: params.parallelToolCalls,
-    ...(params.reasoning ? { reasoning: params.reasoning } : {}),
-    ...(params.text ? { text: params.text } : {}),
-  };
-}
-
-export function parseRemoteCompactionV1Response(value: unknown): {
-  output: ResponseItem[];
-  usage?: unknown;
-} {
-  if (!isRecord(value) || !Array.isArray(value.output)) {
-    throw new Error("OpenAI remote compaction v1 returned no output array.");
-  }
-  const output = value.output.filter(isResponseItem);
-  const artifacts = output.filter(
-    (item) =>
-      (item.type === "compaction" || item.type === "compaction_summary") &&
-      typeof item.encrypted_content === "string" &&
-      item.encrypted_content.length > 0,
-  );
-  if (artifacts.length !== 1) {
-    throw new Error(
-      `OpenAI remote compaction v1 expected exactly one opaque compaction artifact, got ${artifacts.length}.`,
-    );
-  }
-  return { output, usage: value.usage };
 }
 
 export function buildRemoteCompactionRequestBody(params: {
@@ -1023,38 +1039,19 @@ export async function callRemoteCompactionEndpoint(params: {
     throw new Error("Remote compaction is not enabled for this model.");
   }
 
-  const useV1 = isCliProxyResponsesModel(params.model);
-  const response = await fetch(
-    useV1
-      ? remoteCompactionV1EndpointUrl(params.model)
-      : remoteCompactionV2EndpointUrl(params.model),
-    {
-      method: "POST",
-      headers: useV1
-        ? buildRemoteCompactionV1Headers(params)
-        : buildRemoteCompactionHeaders(params),
-      body: JSON.stringify(
-        useV1
-          ? buildRemoteCompactionV1RequestBody(params)
-          : buildRemoteCompactionRequestBody(params),
-      ),
-      signal: params.signal,
-    },
-  );
+  const response = await fetch(remoteCompactionV2EndpointUrl(params.model), {
+    method: "POST",
+    headers: buildRemoteCompactionHeaders(params),
+    body: JSON.stringify(buildRemoteCompactionRequestBody(params)),
+    signal: params.signal,
+  });
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(
-      `OpenAI remote compaction ${useV1 ? "v1" : "v2"} failed (${response.status}): ${text || response.statusText}`,
+    throw new RemoteCompactionError(
+      `OpenAI remote compaction v2 failed (${response.status}): ${text || response.statusText}`,
+      response.status,
     );
-  }
-
-  if (useV1) {
-    const parsed = parseRemoteCompactionV1Response(await response.json());
-    return {
-      output: parsed.output,
-      usage: extractRemoteCompactionUsage(params.model, parsed.usage),
-    };
   }
 
   const parsed = parseRemoteCompactionV2Events(parseSseData(await response.text()));
@@ -1069,16 +1066,6 @@ export function buildRemoteCompactionDetails(
   replacementHistory: ResponseItem[],
   usage?: RemoteCompactionUsageSnapshot,
 ): RemoteCompactionDetails {
-  if (isCliProxyResponsesModel(model)) {
-    return {
-      version: 1,
-      provider: "openai-responses-compact",
-      implementation: "responses_compact_v1",
-      modelKey: modelKey(model),
-      replacementHistory,
-      ...(usage ? { usage } : {}),
-    };
-  }
   return {
     version: 2,
     provider: "openai-responses-compaction",
