@@ -11,9 +11,9 @@ The validated compaction request uses the normal Responses endpoint with a trail
 
 Validated continuity on both providers includes same-process recall, fork safety, resume/reload, and model-switch round trips. The direct OpenAI suite also includes reduced-plaintext replay; that test recovered a generated secret absent from all visible retained history and from the portable Pi summary.
 
-`cliproxy/*` Responses models now use this same protocol, but are **not** covered
-by that live evidence. See [CLIProxy Responses compaction v2](#cliproxy-responses-compaction-v2)
-for what has and has not been proven for that backend.
+`cliproxy/*` Responses models use this same protocol and have their own live
+canary, including the `/model` round-trip they cannot cover. See
+[CLIProxy Responses compaction v2](#cliproxy-responses-compaction-v2).
 
 ## Controlled product-defaults benchmark
 
@@ -150,23 +150,78 @@ adds focused coverage for the transition:
 - persisted `responses_compact_v1` artifacts from older sessions still parse and
   still replay
 
-### Live canary status
+### Live canary
 
-**Not yet run.** At the time of this change every Codex credential in the local
-pool was still in the `auth_unavailable` state left by the earlier compact-v1
-404 cascade, so an ordinary `cliproxy/gpt-5.6-sol` turn failed with
-`503 auth_unavailable: no auth available` before any compaction could be
-attempted. That is the pre-existing incident, not a result of this change, and
-it is itself direct confirmation of the cooldown mechanism described above.
+**Passed** against the real local CLIProxyAPI pool on 2026-08-26, after the
+captain authorised a proxy restart that cleared the `auth_unavailable` cooldown
+left by the earlier compact-v1 cascade.
 
-Consequently this change is validated by source inspection and offline
-regression only. Remote compaction through CLIProxyAPI is **not** claimed to be
-live-proven. When the pool recovers, the intended canary is a disposable Pi
-profile driving `cliproxy/gpt-5.6-sol` with a synthetic marker, checking:
-ordinary response, `responses_compaction_v2` details with exactly one non-empty
-opaque artifact, persistence into the session JSONL, same-process recall, and
-resumed-process recall. Until that passes, treat CLIProxy remote compaction as
-implemented and offline-verified, not field-verified.
+Setup: a disposable `PI_CODING_AGENT_DIR`, session directory, and workspace, all
+removed afterwards. The provider definition was reused verbatim, including its
+`!command` apiKey form, so no credential value was read, copied, or printed.
+`keepRecentTokens` was set to 1 in the disposable global agent settings — the
+workspace is untrusted, so project-local `.pi/settings.json` is not honoured —
+which leaves almost nothing as plaintext after compaction. The marker was a
+codename the model itself invented, so it is not among the retained *user*
+messages that compaction v2 keeps outside the artifact.
+
+Every Pi request was routed through a local recording reverse proxy that
+forwarded verbatim to `127.0.0.1:8317` and recorded only `METHOD PATH -> STATUS`
+(never header values, never bodies), so the set of paths actually requested is
+observed evidence rather than an assumption.
+
+Retained result:
+
+```json
+{
+  "ordinaryResponseWorked": true,
+  "paddingResponseWorked": true,
+  "compactCommandWorked": true,
+  "remoteImplementation": "responses_compaction_v2",
+  "remoteArtifactCount": 1,
+  "remoteArtifactNonEmpty": true,
+  "replacementHistoryCount": 3,
+  "visibleReplacementHistoryOmittedMarker": true,
+  "portableSummaryOmittedMarker": true,
+  "persistedRemoteArtifactInSessionFile": true,
+  "sameProcessRecoveredMarker": true,
+  "ordinaryTurnAfterCompactWorked": true,
+  "resumedProcessRecoveredMarker": true,
+  "compactEndpointRequestCount": 0,
+  "responsesEndpointRequestCount": 7,
+  "observedPathsWithStatus": ["POST /v1/responses -> 200"],
+  "firstProcessStderrClass": "none",
+  "secondProcessStderrClass": "none",
+  "modelSwitchScenario": "skipped: catalogue exposes a single cliproxy model",
+  "verdict": "PASS"
+}
+```
+
+What this establishes:
+
+1. Ordinary `cliproxy/gpt-5.6-sol` turns work through the extension.
+2. `/compact` returns `responses_compaction_v2` details holding exactly one
+   non-empty opaque artifact.
+3. That artifact is persisted into the session JSONL under
+   `details.remoteCompaction`.
+4. The marker appears in neither the portable summary nor the visible
+   replacement history, yet the next turn in the same process recovered it
+   exactly — so recall is attributable to the opaque artifact, not to surviving
+   plaintext.
+5. A second Pi process resumed the saved session and recovered the marker again,
+   with no account pin.
+6. An ordinary turn after compaction succeeded, and every observed request
+   returned 200. **No `auth_unavailable` cascade followed the compaction**,
+   which is the regression this change exists to remove.
+7. Across the whole run the proxy observed exactly one distinct path,
+   `POST /v1/responses`, and zero requests to any `/compact` path.
+
+Both Pi processes produced no stderr and emitted no error events.
+
+Not covered: the `/model` switch round-trip. The captain's catalogue exposes a
+single `cliproxy` model, so there is no second model to switch to. Cross-model
+replay filtering remains covered by the offline reconstruction regression and by
+the direct-OpenAI live suite.
 
 ## Legacy `/responses/compact` validation (historical)
 

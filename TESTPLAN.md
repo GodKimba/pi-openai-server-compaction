@@ -96,7 +96,15 @@ PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=cliproxy/gpt-5.6-sol node --experimental-
 
 Its `/model` round-trip scenarios need a second model from the same provider, so
 a single-model CLIProxy configuration only reaches the compaction, recall, and
-resume scenarios.
+resume scenarios. Note that the harness writes `keepRecentTokens` to the
+project's `.pi/settings.json`; that file is only honoured for trusted projects,
+so on an untrusted workspace put compaction settings in the agent directory
+instead or `/compact` will refuse with "Nothing to compact (session too small)".
+
+When a canary must also prove which upstream paths were used, route Pi at a
+local reverse proxy that forwards to the real endpoint and records only
+`METHOD PATH -> STATUS`. That is how the CLIProxy result in `VALIDATION.md`
+establishes zero requests to any `/compact` path.
 
 The automated live harness lives in `tests/live/openai-compaction-rpc-live.ts`.
 

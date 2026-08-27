@@ -56,7 +56,7 @@ https://x.com/alexisgallagher/status/2042396986327060736?s=20 .)
 |-----------------------|-------------------|-----------------------------------|----------------------------------|-------------|
 | `openai/*`            | Yes (v2)          | Yes                               | Yes                              | Yes         |
 | `openai-codex/*`      | Yes (v2)          | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
-| `cliproxy/*` Responses models | Yes (v2)  | No                                | No (Pi transport retained)       | See [VALIDATION.md](VALIDATION.md) |
+| `cliproxy/*` Responses models | Yes (v2)  | No                                | No (Pi transport retained)       | Yes (except `/model` round-trip) |
 | Azure                 | Partial (opt-in via config) | Partial                 | No                               | No          |
 
 ## Why compact v1 was removed
@@ -84,6 +84,13 @@ compaction now takes the same Responses compaction v2 path already used for
 `compaction_trigger`, which CLIProxyAPI forwards as a normal Responses request.
 Sessions that already contain a compact-v1 artifact keep replaying it; only the
 outbound protocol changed.
+
+This is live-validated against the real local pool: compaction, artifact
+persistence, same-process recall, resumed-process recall, and an ordinary turn
+after compaction all pass, with every observed request going to
+`POST /v1/responses` and none to any `/compact` path. The one uncovered
+scenario is the `/model` round-trip, which needs a second model from the same
+provider. See [VALIDATION.md](VALIDATION.md).
 
 ## Install
 
