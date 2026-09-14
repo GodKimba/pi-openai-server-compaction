@@ -10,15 +10,15 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type JsonRecord = Record<string, unknown>;
 
-export type CliProxyTarget = {
-  provider: string;
+export type AstraTarget = {
+  provider: "cliproxy-main-400k";
   api: "openai-responses";
-  modelId: string;
+  modelId: "gpt-6-astra";
   baseUrl: string;
 };
 
 export type ExtensionConfig = {
-  cliProxyTargets?: CliProxyTarget[];
+  astraTarget?: AstraTarget | null;
   enabled?: boolean;
   includeAzure?: boolean;
   compactThreshold?: number;
@@ -43,20 +43,16 @@ export function isCliProxyTargetBaseUrl(value: unknown): value is string {
   }
 }
 
-export function parseCliProxyTargets(value: unknown): CliProxyTarget[] {
-  if (value === undefined) return [];
-  const invalid = () => new Error(
-    "Invalid global cliProxyTargets: expected exact provider/api/modelId/baseUrl entries with openai-responses and a static HTTP(S) /v1 base (no credentials, query, fragment, or patterns).",
-  );
-  if (!Array.isArray(value)) throw invalid();
-  return value.map((entry) => {
-    if (!isRecord(entry) || Object.keys(entry).sort().join(",") !== "api,baseUrl,modelId,provider" ||
-      typeof entry.provider !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(entry.provider) ||
-      ["openai", "openai-codex", "azure-openai", "azure-openai-responses", "cliproxy"].includes(entry.provider) ||
-      entry.api !== "openai-responses" || typeof entry.modelId !== "string" ||
-      !entry.modelId || /[\s*?:]/.test(entry.modelId) || !isCliProxyTargetBaseUrl(entry.baseUrl)) throw invalid();
-    return { provider: entry.provider, api: entry.api, modelId: entry.modelId, baseUrl: entry.baseUrl };
-  });
+export function parseAstraTarget(value: unknown): AstraTarget | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || Object.keys(value).sort().join(",") !== "api,baseUrl,modelId,provider" ||
+    value.provider !== "cliproxy-main-400k" || value.api !== "openai-responses" ||
+    value.modelId !== "gpt-6-astra" || !isCliProxyTargetBaseUrl(value.baseUrl)) {
+    throw new Error(
+      "Invalid global astraTarget: expected cliproxy-main-400k/openai-responses/gpt-6-astra and an exact static HTTP(S) /v1 base (no credentials, query, fragment, or patterns).",
+    );
+  }
+  return { provider: value.provider, api: value.api, modelId: value.modelId, baseUrl: value.baseUrl };
 }
 
 function readJsonFile(path: string): JsonRecord | undefined {
@@ -97,7 +93,7 @@ export function loadConfig(cwd: string): Required<ExtensionConfig> {
 
   return {
     // Project configuration must never grant or replace transport permission.
-    cliProxyTargets: parseCliProxyTargets(globalCfg.cliProxyTargets),
+    astraTarget: parseAstraTarget(globalCfg.astraTarget),
     enabled:
       toBoolean(process.env.PI_OPENAI_SERVER_COMPACTION_ENABLED) ??
       toBoolean(merged.enabled) ??

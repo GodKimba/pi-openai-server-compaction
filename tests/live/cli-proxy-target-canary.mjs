@@ -49,7 +49,7 @@ try {
     cliproxy: { ...source, models: [sourceModel] },
     [provider]: { ...source, models: [{ ...sourceModel, contextWindow: 400000 }] },
   } }), { mode: 0o600 });
-  writeFileSync(join(agentDir, "openai-server-compaction.json"), JSON.stringify({ cliProxyTargets: [{ provider, api: source.api, modelId: sourceModel.id, baseUrl: source.baseUrl }] }), { mode: 0o600 });
+  writeFileSync(join(agentDir, "openai-server-compaction.json"), JSON.stringify({ astraTarget: { provider, api: source.api, modelId: sourceModel.id, baseUrl: source.baseUrl } }), { mode: 0o600 });
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.CODEX_HOME = join(root, "codex");
   process.env.PI_OFFLINE = "1";

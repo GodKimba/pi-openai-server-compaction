@@ -161,8 +161,9 @@ Loads and normalizes configuration from:
 - `.pi/openai-server-compaction.json`
 - environment variables
 
-`cliProxyTargets` is the exception to project precedence: only the global
-file can grant additional exact CLIProxy provider/API/model/base identities.
+`astraTarget` is the exception to project precedence: only the global
+file can opt in `cliproxy-main-400k/openai-responses/gpt-6-astra` at one
+exact static base. Other identities and multi-target arrays are not supported.
 `src/openai.ts` receives that config explicitly; `src/index.ts` threads it into
 compaction and replay, and `src/remote-compaction.ts` uses it for the same v2
 endpoint/header path without renaming the selected provider. Resolved auth

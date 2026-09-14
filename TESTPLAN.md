@@ -79,7 +79,7 @@ The offline harness in `scripts/smoke.mjs` covers:
 - the removed compact-v1 helpers staying removed, and no file under `src/` constructing that URL
 - end-to-end wiring: driving the real `session_before_compact` handler, one 404 closes the gate, announces itself once, and the next compaction issues no further remote request
 
-### Exact additional CLIProxy identities (Pi 0.85.1)
+### Exact Astra main CLIProxy identity (Pi 0.85.1)
 
 `npm test` also runs `scripts/cli-proxy-targets.mjs`: real `ModelRuntime`
 400k/272k catalogs (including the follow-main counterexample), selected-provider

@@ -195,7 +195,7 @@ Users should be aware:
 Config is read from:
 
 - `$PI_CODING_AGENT_DIR/openai-server-compaction.json` (global; defaults to `~/.pi/agent`, with Pi's own `~` expansion)
-- `.pi/openai-server-compaction.json` (project-local, takes precedence **except for `cliProxyTargets`, which is global-only**)
+- `.pi/openai-server-compaction.json` (project-local, takes precedence **except for `astraTarget`, which is global-only**)
 
 ```json
 {
@@ -225,26 +225,24 @@ extension configuration:
 
 ```json
 {
-  "cliProxyTargets": [
-    {
-      "provider": "cliproxy-main-400k",
-      "api": "openai-responses",
-      "modelId": "gpt-6-astra",
-      "baseUrl": "http://127.0.0.1:8317/v1"
-    }
-  ]
+  "astraTarget": {
+    "provider": "cliproxy-main-400k",
+    "api": "openai-responses",
+    "modelId": "gpt-6-astra",
+    "baseUrl": "http://127.0.0.1:8317/v1"
+  }
 }
 ```
 
-- Default is `[]`; the original literal `cliproxy` behavior is unchanged.
-- Entries have exactly those four fields, compared byte-for-byte. No wildcard,
-  host inference, project permission, or environment override grants access.
-  Provider names use lowercase letters, digits, `_` and `-` and must not name
-  an existing OpenAI/Codex/Azure/CLIProxy identity. Model ids must be nonempty
-  and contain no whitespace, `*`, `?` or `:`.
+- Default is `null` (disabled); the original literal `cliproxy` behavior is unchanged.
+- The single target has exactly those four fields, compared byte-for-byte.
+  Provider, API and model id must be exactly the values shown above; only the
+  static base is configurable. Arrays and other identities are rejected.
+  No wildcard, host inference, project permission, or environment override
+  grants access. The former `cliProxyTargets` array grants no permission.
 - The static HTTP(S) base must be a canonical URL ending in `/v1`, with no
   userinfo, query, fragment, whitespace or patterns. Redirects during remote
-  compaction are refused. Invalid entries produce a configuration error;
+  compaction are refused. Invalid targets produce a configuration error;
   they are never partially accepted or interpreted as broader permission.
 - Authentication is resolved for the selected identity only. There is no
   fallback to another provider's key. A resolved auth base differing from the
@@ -259,7 +257,7 @@ extension configuration:
   identity uses portable context until that identity compacts; it does not
   migrate old blobs or recover already summarized history. Base URLs are not
   part of that legacy key: **do not repoint an existing identity to a different
-  backend**. Use a new identity/session instead.
+  backend**. Start a new session if changing the approved backend.
 
 Select the additional identity explicitly with `/model`, without saving a new
 startup default. Keep worker selection explicit on the original provider/id.
@@ -284,7 +282,7 @@ session JSONL/blobs, and never roll the protocol back to compact-v1. A 400000
 catalog window is configuration, not server-capacity evidence; with Pi's
 16384-token reserve its automatic threshold is above 383616 tokens.
 
-Environment overrides (none grants additional CLIProxy targets):
+Environment overrides (none grants Astra target permission):
 
 | Variable                                           | Effect                                                      |
 |----------------------------------------------------|-------------------------------------------------------------|

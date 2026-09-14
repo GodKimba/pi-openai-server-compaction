@@ -7,7 +7,7 @@ import { resolve, join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import extension from "../src/index.ts";
-import { loadConfig, parseCliProxyTargets } from "../src/config.ts";
+import { loadConfig, parseAstraTarget } from "../src/config.ts";
 import { isCliProxyResponsesModel, supportsRemoteCompactionModel, modelKey, supportsPreviousResponseId } from "../src/openai.ts";
 import { remoteCompactionV2EndpointUrl } from "../src/remote-compaction.ts";
 
@@ -21,13 +21,13 @@ const originalEnv = { ...process.env };
 const originalFetch = globalThis.fetch;
 let session;
 const target = { provider: "cliproxy-main-400k", api: "openai-responses", modelId: "gpt-6-astra", baseUrl: "http://127.0.0.1:8317/v1" };
-const writeConfig = (cliProxyTargets = [target], extra = {}) => writeFileSync(join(agentDir, "openai-server-compaction.json"), JSON.stringify({ cliProxyTargets, ...extra }));
+const writeConfig = (astraTarget = target, extra = {}) => writeFileSync(join(agentDir, "openai-server-compaction.json"), JSON.stringify({ astraTarget, ...extra }));
 try {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.CODEX_HOME = join(root, "codex");
   process.env.PI_OFFLINE = "1";
   for (const key of Object.keys(process.env)) if (key.startsWith("PI_OPENAI_SERVER_COMPACTION_")) delete process.env[key];
-  assert.deepEqual(loadConfig(cwd).cliProxyTargets, []);
+  assert.equal(loadConfig(cwd).astraTarget, null);
   const model = { id: target.modelId, name: "Synthetic Astra", reasoning: true, input: ["text"], contextWindow: 272000, maxTokens: 128000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const transport = { api: target.api, baseUrl: target.baseUrl, apiKey: "synthetic-original-key" };
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
@@ -61,10 +61,13 @@ try {
     assert.equal(isCliProxyResponsesModel({ ...main, ...change }, cfg), false);
     assert.equal(supportsRemoteCompactionModel({ ...main, ...change }, cfg), false);
   }
-  for (const invalid of [null, {}, "*", [null], [{ ...target, extra: true }], [{ ...target, provider: "*" }], [{ ...target, modelId: "gpt-*" }], [{ ...target, api: "openai-codex-responses" }], ...["file:///v1", target.baseUrl + "?", target.baseUrl + "#", "http://a:b@host/v1", "http://host/path", "http://host/*/v1", " http://host/v1", "http://host:80/v1"].map(baseUrl => [{ ...target, baseUrl }])]) assert.throws(() => parseCliProxyTargets(invalid), /Invalid global cliProxyTargets/);
-  writeFileSync(join(cwd, ".pi/openai-server-compaction.json"), JSON.stringify({ cliProxyTargets: [{ ...target, provider: "project-allowed" }] }));
-  assert.deepEqual(loadConfig(cwd).cliProxyTargets, [target]);
-  writeConfig([]);
+  for (const invalid of [{}, "*", [], [target], [target, target], { ...target, extra: true }, { ...target, provider: "*" }, { ...target, provider: "other-main" }, { ...target, modelId: "gpt-*" }, { ...target, modelId: "gpt-5" }, { ...target, api: "openai-codex-responses" }, ...["file:///v1", target.baseUrl + "?", target.baseUrl + "#", "http://a:b@host/v1", "http://host/path", "http://host/*/v1", " http://host/v1", "http://host:80/v1"].map(baseUrl => ({ ...target, baseUrl }))]) assert.throws(() => parseAstraTarget(invalid), /Invalid global astraTarget/);
+  writeFileSync(join(cwd, ".pi/openai-server-compaction.json"), JSON.stringify({ astraTarget: { ...target, provider: "project-allowed" } }));
+  assert.deepEqual(loadConfig(cwd).astraTarget, target);
+  writeConfig(null, { cliProxyTargets: [target] });
+  assert.equal(isCliProxyResponsesModel(main, loadConfig(cwd)), false);
+  assert.equal(isCliProxyResponsesModel(original, loadConfig(cwd)), true);
+  writeConfig(null);
   assert.equal(isCliProxyResponsesModel(main, loadConfig(cwd)), false);
   writeConfig();
   assert.equal(remoteCompactionV2EndpointUrl(main, cfg), target.baseUrl + "/responses");
@@ -131,10 +134,10 @@ try {
   await session.prompt("Synthetic resumed continuation.");
   assert.equal(hasArtifact(captured.at(-1)), true);
   assert.equal(JSON.stringify(captured.at(-1).body).includes("Original identity synthetic turn."), false);
-  writeConfig([]);
+  writeConfig(null);
   await session.prompt("Permission removed.");
   assert.equal(hasArtifact(captured.at(-1)), false);
-  writeConfig([target], { enabled: false });
+  writeConfig(target, { enabled: false });
   await session.prompt("Extension disabled.");
   assert.equal(hasArtifact(captured.at(-1)), false);
   writeConfig();
@@ -146,10 +149,10 @@ try {
   const count = captured.length;
   assert.equal(await handlers.get("session_before_compact")({}, ctx), undefined);
   assert.equal(captured.length, count);
-  writeConfig([]);
+  writeConfig(null);
   assert.equal(await handlers.get("session_before_compact")({}, ctx), undefined);
   assert.equal(authCalls, 1, "removed permission must not resolve auth");
-  writeConfig([target], { enabled: false });
+  writeConfig(target, { enabled: false });
   assert.equal(await handlers.get("session_before_compact")({}, ctx), undefined);
   assert.equal(authCalls, 1, "disabled extension must not resolve auth");
   writeConfig();
@@ -161,8 +164,8 @@ try {
     assert.equal(await handlers.get("session_before_compact")({}, ctx), undefined);
     assert.equal(captured.length, count, "auth refusal must not issue remote or portable fetch");
   }
-  writeConfig([{ ...target, api: "invalid" }]);
-  assert.throws(() => loadConfig(cwd), /Invalid global cliProxyTargets/);
+  writeConfig({ ...target, api: "invalid" });
+  assert.throws(() => loadConfig(cwd), /Invalid global astraTarget/);
   writeConfig();
   failRemote = true;
   const beforeFailures = captured.filter(r => r.remote).length;
@@ -189,7 +192,7 @@ try {
   assert.deepEqual(filteredLoader.getExtensions().errors, []);
   assert.equal(filteredLoader.getExtensions().extensions.length, 1);
   assert.equal(filteredLoader.getExtensions().extensions[0].path, resolve("src/index.ts"));
-  console.log("PASS offline: real Pi 0.85.1 catalogs, serializer, SDK compaction/persistence/resume/model round-trip and resource filtering; exact global-only targets, auth and 404 negatives. HTTP/artifact mocked, not upstream recall.");
+  console.log("PASS offline: real Pi 0.85.1 catalogs, serializer, SDK compaction/persistence/resume/model round-trip and resource filtering; exact global-only Astra target, auth and 404 negatives. HTTP/artifact mocked, not upstream recall.");
 } finally {
   session?.dispose();
   globalThis.fetch = originalFetch;

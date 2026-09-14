@@ -64,10 +64,9 @@ export function isDirectOpenAIResponsesModel(model: ModelLike): boolean {
 export function isCliProxyResponsesModel(model: ModelLike, cfg?: ExtensionConfig): boolean {
   if (model.api !== "openai-responses") return false;
   if (model.provider !== "cliproxy") {
-    return cfg?.cliProxyTargets?.some((target) =>
-      model.provider === target.provider && model.api === target.api &&
-      model.id === target.modelId && model.baseUrl === target.baseUrl,
-    ) ?? false;
+    const target = cfg?.astraTarget;
+    return Boolean(target && model.provider === target.provider && model.api === target.api &&
+      model.id === target.modelId && model.baseUrl === target.baseUrl);
   }
   if (typeof model.baseUrl !== "string" || !model.baseUrl.trim()) return false;
   try {
