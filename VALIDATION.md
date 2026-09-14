@@ -2,7 +2,7 @@
 
 ## Additional CLIProxy identity: Astra 400k catalog (2026-09-14)
 
-The recorded live canary and capacity evidence below belongs only to code
+The original live canary and capacity evidence below belongs only to code
 head `861a8152711511df0ac1acd6b8456feb8b21d9ff`, based on upstream v2
 `db6880ed2c084fb334fd6167354ad8e292aec1aa`. Pi and its AI/agent packages were
 **0.85.1**, Node 24.18.1. Those calls exercised the former generic
@@ -16,10 +16,10 @@ HTTP responses and artifacts. The small live canary was then repeated on
 capacity result below remains evidence only for `861a815` and was not repeated.
 No large compaction or production activation was performed.
 
-### Current exact-target small canary — PASS at `fd41f38`
+### Exact-target small canary — PASS at `fd41f38`
 
 The isolated `tests/live/cli-proxy-target-canary.mjs --canary` fixture used the
-exact global `astraTarget` configuration on the current head. It sent 2600 local
+exact global `astraTarget` configuration at tested head `fd41f38`. It sent 2600 local
 o200k_base padding tokens and completed eight HTTP 200 requests, all through
 `POST /v1/responses`, including one Responses v2 compaction trigger. One opaque
 artifact was persisted. The generated marker was absent from the portable

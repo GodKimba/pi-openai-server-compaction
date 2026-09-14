@@ -57,6 +57,7 @@ https://x.com/alexisgallagher/status/2042396986327060736?s=20 .)
 | `openai/*`            | Yes (v2)          | Yes                               | Yes                              | Yes         |
 | `openai-codex/*`      | Yes (v2)          | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
 | `cliproxy/*` Responses models | Yes (v2)  | No                                | No (Pi transport retained)       | Yes (except `/model` round-trip) |
+| Exact global Astra target | Yes (v2)       | No                                | No (Pi transport retained)       | Yes         |
 | Azure                 | Partial (opt-in via config) | Partial                 | No                               | No          |
 
 ## Why compact v1 was removed
@@ -119,7 +120,7 @@ pi -e ./src/index.ts --model openai/gpt-5.6-luna
 - Node `>= 22`
 - Pi `>=0.84.0 <0.85.0` or `0.85.1` (the latter is exercised by the offline SDK/catalog/serialization suite; this is not a claim of compatibility with every 0.85 release)
 - Auth/config for the model you want to use must already work in Pi
-- A supported direct OpenAI Responses model, or an explicitly configured model with `provider: "cliproxy"`, `api: "openai-responses"`, and a valid HTTP(S) `baseUrl`
+- A supported direct OpenAI Responses model; an explicitly configured model with `provider: "cliproxy"`, `api: "openai-responses"`, and a valid HTTP(S) `baseUrl`; or the exact global Astra target documented below
 
 ## What it does
 
@@ -134,7 +135,7 @@ For direct `openai/*` models between compactions, the extension also:
 - Uses `previous_response_id` for live continuation when safe
 - Provides a WebSocket-backed transport path with HTTP fallback
 
-For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries. For eligible `cliproxy/*` models it likewise replays replacement history through Pi's existing Responses transport; model names alone never enable this path, and no provider override or WebSocket transport is registered for `cliproxy`.
+For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries. For eligible CLIProxy models—the literal `cliproxy/*` family or the exact global Astra target—it likewise replays replacement history through Pi's existing Responses transport; model names alone never enable the additional identity, and no provider override or WebSocket transport is registered for either CLIProxy path.
 
 For CLIProxy models the compaction request carries only the downstream proxy
 credential, the Pi session identity the proxy's affinity selector reads
