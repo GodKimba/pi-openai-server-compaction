@@ -10,14 +10,23 @@ head `861a8152711511df0ac1acd6b8456feb8b21d9ff`, based on upstream v2
 
 Commit `a9743eec18ad8cba61516e14af381c429a3122d1` subsequently replaced that
 path in `src/config.ts` and `src/openai.ts` with the single exact `astraTarget`
-opt-in. The current narrowing has **not been live-rerun**; the historical PASS
-results below are not live validation of the current HEAD. Its focused offline
-SDK regression passed after narrowing, with mocked HTTP responses and artifacts.
+opt-in. Its focused offline SDK regression passed after narrowing, with mocked
+HTTP responses and artifacts. The small live canary was then repeated on
+`fd41f38d0848f75511e69a443c4f11a1f71c7d5f`; the separate historical 300k
+capacity result below remains evidence only for `861a815` and was not repeated.
+No large compaction or production activation was performed.
 
-No live requests are authorized inside this pipeline. The driver is authorized
-to repeat only the small canary after the final validated head is synchronized;
-that run remains pending. No repeated 300k request, large compaction, or
-production activation is authorized.
+### Current exact-target small canary — PASS at `fd41f38`
+
+The isolated `tests/live/cli-proxy-target-canary.mjs --canary` fixture used the
+exact global `astraTarget` configuration on the current head. It sent 2600 local
+o200k_base padding tokens and completed eight HTTP 200 requests, all through
+`POST /v1/responses`, including one Responses v2 compaction trigger. One opaque
+artifact was persisted. The generated marker was absent from the portable
+summary and visible recall payload, yet was recovered in the same process,
+after switching to the original identity and back, and after dispose/reopen
+resume. The original identity received no Astra artifact. Only the development
+extension was loaded; temporary configuration and session files were removed.
 
 ### Offline evidence
 
