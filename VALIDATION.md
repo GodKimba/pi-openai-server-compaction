@@ -1,5 +1,89 @@
 # Validation
 
+## Additional CLIProxy identity: Astra 400k catalog (2026-09-14)
+
+The original live canary and capacity evidence below belongs only to code
+head `861a8152711511df0ac1acd6b8456feb8b21d9ff`, based on upstream v2
+`db6880ed2c084fb334fd6167354ad8e292aec1aa`. Pi and its AI/agent packages were
+**0.85.1**, Node 24.18.1. Those calls exercised the former generic
+`cliProxyTargets` configuration and matching path.
+
+Commit `a9743eec18ad8cba61516e14af381c429a3122d1` subsequently replaced that
+path in `src/config.ts` and `src/openai.ts` with the single exact `astraTarget`
+opt-in. Its focused offline SDK regression passed after narrowing, with mocked
+HTTP responses and artifacts. The small live canary was then repeated on
+`fd41f38d0848f75511e69a443c4f11a1f71c7d5f`; the separate historical 300k
+capacity result below remains evidence only for `861a815` and was not repeated.
+No large compaction or production activation was performed.
+
+### Exact-target small canary — PASS at `fd41f38`
+
+The isolated `tests/live/cli-proxy-target-canary.mjs --canary` fixture used the
+exact global `astraTarget` configuration at tested head `fd41f38`. It sent 2600 local
+o200k_base padding tokens and completed eight HTTP 200 requests, all through
+`POST /v1/responses`, including one Responses v2 compaction trigger. One opaque
+artifact was persisted. The generated marker was absent from the portable
+summary and visible recall payload, yet was recovered in the same process,
+after switching to the original identity and back, and after dispose/reopen
+resume. The original identity received no Astra artifact. Only the development
+extension was loaded; temporary configuration and session files were removed.
+
+### Offline evidence
+
+Before the `astraTarget` narrowing, `npm test` passed: typecheck, existing smoke and the real Pi SDK/catalog/
+serialization suite in `scripts/cli-proxy-targets.mjs`. Both benchmark
+self-tests also passed. The catalog keeps the original identity at 272000 and
+selects the additional identity at 400000; a separate runtime following the
+main identity also gets 400000, demonstrating why supervision must be pinned.
+Network responses in this suite are mocked and are **not** upstream evidence.
+The real resource loader additionally verifies an exact negative extension
+path in an `autoload:false` project delta; an empty delta array alone does not
+disable an inherited package resource.
+
+### Real small canary — PASS at `861a815`
+
+The explicit SDK fixture `tests/live/cli-proxy-target-canary.mjs --canary`
+loaded only this development extension, with no tools/discovered resources,
+into a private temporary agent directory. It reused the existing CLIProxy
+credential **command reference**, resolving only the selected test identity;
+no credential values were logged or written into the fixture configuration.
+Production configs, installations, sessions, workers and services were not
+modified. Temporary fixture files were removed. Client retries and automatic
+compaction were disabled; the fixture stops on the first error.
+
+- Additional identity: `cliproxy-main-400k/gpt-6-astra`; upstream request id
+  remained `gpt-6-astra`, base `http://127.0.0.1:8317/v1`.
+- Synthetic padding: **2600 local o200k_base tokens**, plus short instructions
+  and turns. This encoding is a local measurement, not a certified Astra tokenizer.
+- **Eight HTTP 200 requests**, all `POST /v1/responses`; **one** remote
+  `compaction_trigger`, no HTTP request to a `/compact` path.
+- One nonempty v2 opaque artifact persisted in Pi JSONL.
+- Exact generated-codename recall passed in the same process, after a real
+  original/alias model round trip, and after SDK dispose/reopen/resume.
+- The marker was absent from the portable summary and from the visible input
+  at **each** recall request. Public Pi tree navigation returned to the
+  compaction checkpoint before later scenarios, preventing the previous
+  recall answer from becoming a plaintext shortcut. No JSONL/blob was edited.
+- The original-identity turn sent no alias artifact; returning to the alias
+  restored compatible replay. The normal original and alias turns succeeded.
+
+### Single capacity request — PASS at `861a815` (>272k, not exact 400k)
+
+After the canary passed, the same head ran `--capacity` once with one synthetic
+input of **300011 o200k_base tokens** and a request to answer only `OK`.
+The normal Pi Responses call returned HTTP 200 and `OK`; provider usage was
+**300393 input tokens, 5 output tokens**, zero cache-read/write tokens.
+This establishes capacity above 272000 on this route for this request. It
+proves neither the exact 400000 boundary nor large-context compaction/replay,
+automatic threshold behavior under load, or every account in the pool.
+
+No large compaction was attempted. Proving the combination under load would
+require a separately authorized large synthetic compaction plus replay; the
+remote and portable-summary passes alone can add roughly **600k input tokens**
+to a 300k history, before setup/replay/output costs. There is no verified
+subscription tariff here; zero catalog cost is not evidence of free usage.
+No production activation or merge is implied by these results.
+
 ## Current Responses compaction v2 validation
 
 The full live Pi RPC suite passes with both:

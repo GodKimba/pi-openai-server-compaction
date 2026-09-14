@@ -213,10 +213,19 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, ctx) => {
     const cfg = loadConfig(ctx.cwd);
     const model = ctx.model;
-    if (!cfg.enabled || !model || !supportsRemoteCompactionModel(model)) return undefined;
+    if (!cfg.enabled || !model || !supportsRemoteCompactionModel(model, cfg)) return undefined;
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) return undefined;
+    if (isCliProxyResponsesModel(model, cfg) && model.provider !== "cliproxy" &&
+      ((auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl) ||
+        (auth.env !== undefined && Object.keys(auth.env).length > 0))) {
+      if (ctx.hasUI) ctx.ui.notify(
+        "CLIProxy target remote compaction refused: resolved auth must use the approved static base URL and no provider-scoped environment.",
+        "warning",
+      );
+      return undefined;
+    }
 
     const tools = buildToolsPayload(pi.getAllTools(), pi.getActiveTools());
     const sessionId = getSessionId(ctx);
@@ -264,6 +273,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     const [localResult, remoteResult] = await Promise.allSettled([
       localSummaryPromise,
       callRemoteCompactionEndpoint({
+        cfg,
         model,
         apiKey: auth.apiKey,
         headers: auth.headers,
@@ -379,7 +389,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     });
     const remoteState = getMatchingRemoteState(sessionId, model);
 
-    if (isOpenAICodexResponsesModel(model) || isCliProxyResponsesModel(model)) {
+    if (isOpenAICodexResponsesModel(model) || isCliProxyResponsesModel(model, cfg)) {
       if (!remoteState) return undefined;
       const payload = applyRemoteHistoryPayloadPatch({
         payload: event.payload,

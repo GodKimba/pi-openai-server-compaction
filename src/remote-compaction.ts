@@ -21,7 +21,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { calculateCost, type Model, type ProviderHeaders, type Usage } from "@earendil-works/pi-ai";
 import { complete } from "@earendil-works/pi-ai/compat";
-import { isRecord } from "./config.ts";
+import { isRecord, type ExtensionConfig } from "./config.ts";
 import {
   hostnameFromBaseUrl,
   isCliProxyResponsesModel,
@@ -169,14 +169,14 @@ function resolveCodexResponsesEndpoint(model: Model<any>): string {
   return `${baseUrl}/codex/responses`;
 }
 
-export function remoteCompactionV2EndpointUrl(model: Model<any>): string {
+export function remoteCompactionV2EndpointUrl(model: Model<any>, cfg?: ExtensionConfig): string {
   if (isDirectOpenAIResponsesModel(model)) {
     return resolveDirectOpenAIResponsesEndpoint(model);
   }
   if (isOpenAICodexResponsesModel(model)) {
     return resolveCodexResponsesEndpoint(model);
   }
-  if (isCliProxyResponsesModel(model)) {
+  if (isCliProxyResponsesModel(model, cfg)) {
     return resolveCliProxyResponsesEndpoint(model);
   }
   throw new Error("Remote compaction v2 is not supported for this model.");
@@ -304,12 +304,13 @@ function buildCliProxyRemoteCompactionHeaders(params: {
 }
 
 export function buildRemoteCompactionHeaders(params: {
+  cfg?: ExtensionConfig;
   model: Model<any>;
   apiKey: string;
   headers?: ProviderHeaders;
   sessionId?: string;
 }): Record<string, string> {
-  if (isCliProxyResponsesModel(params.model)) {
+  if (isCliProxyResponsesModel(params.model, params.cfg)) {
     return buildCliProxyRemoteCompactionHeaders(params);
   }
 
@@ -1023,6 +1024,7 @@ export function parseRemoteCompactionV2Events(events: unknown[]): RemoteCompacti
 }
 
 export async function callRemoteCompactionEndpoint(params: {
+  cfg?: ExtensionConfig;
   model: Model<any>;
   apiKey: string;
   headers?: ProviderHeaders;
@@ -1035,15 +1037,18 @@ export async function callRemoteCompactionEndpoint(params: {
   text?: ResponsesTextConfig;
   signal?: AbortSignal;
 }): Promise<RemoteCompactionResult> {
-  if (!supportsRemoteCompactionModel(params.model)) {
+  if (!supportsRemoteCompactionModel(params.model, params.cfg)) {
     throw new Error("Remote compaction is not enabled for this model.");
   }
 
-  const response = await fetch(remoteCompactionV2EndpointUrl(params.model), {
+  const response = await fetch(remoteCompactionV2EndpointUrl(params.model, params.cfg), {
     method: "POST",
     headers: buildRemoteCompactionHeaders(params),
     body: JSON.stringify(buildRemoteCompactionRequestBody(params)),
     signal: params.signal,
+    // Exact opt-in must not follow a redirect to an unapproved endpoint.
+    ...(params.model.provider !== "cliproxy" && isCliProxyResponsesModel(params.model, params.cfg)
+      ? { redirect: "error" as const } : {}),
   });
 
   if (!response.ok) {

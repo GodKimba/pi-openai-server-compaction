@@ -57,6 +57,7 @@ https://x.com/alexisgallagher/status/2042396986327060736?s=20 .)
 | `openai/*`            | Yes (v2)          | Yes                               | Yes                              | Yes         |
 | `openai-codex/*`      | Yes (v2)          | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
 | `cliproxy/*` Responses models | Yes (v2)  | No                                | No (Pi transport retained)       | Yes (except `/model` round-trip) |
+| Exact global Astra target | Yes (v2)       | No                                | No (Pi transport retained)       | Yes         |
 | Azure                 | Partial (opt-in via config) | Partial                 | No                               | No          |
 
 ## Why compact v1 was removed
@@ -117,9 +118,9 @@ pi -e ./src/index.ts --model openai/gpt-5.6-luna
 ## Requirements
 
 - Node `>= 22`
-- Pi `>=0.84.0 <0.85.0`
+- Pi `>=0.84.0 <0.85.0` or `0.85.1` (the latter is exercised by the offline SDK/catalog/serialization suite; this is not a claim of compatibility with every 0.85 release)
 - Auth/config for the model you want to use must already work in Pi
-- A supported direct OpenAI Responses model, or an explicitly configured model with `provider: "cliproxy"`, `api: "openai-responses"`, and a valid HTTP(S) `baseUrl`
+- A supported direct OpenAI Responses model; an explicitly configured model with `provider: "cliproxy"`, `api: "openai-responses"`, and a valid HTTP(S) `baseUrl`; or the exact global Astra target documented below
 
 ## What it does
 
@@ -134,7 +135,7 @@ For direct `openai/*` models between compactions, the extension also:
 - Uses `previous_response_id` for live continuation when safe
 - Provides a WebSocket-backed transport path with HTTP fallback
 
-For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries. For eligible `cliproxy/*` models it likewise replays replacement history through Pi's existing Responses transport; model names alone never enable this path, and no provider override or WebSocket transport is registered for `cliproxy`.
+For `openai-codex/*` models, the extension preserves the built-in Codex transport and only injects reconstructed remote compaction history after compaction boundaries. For eligible CLIProxy models—the literal `cliproxy/*` family or the exact global Astra target—it likewise replays replacement history through Pi's existing Responses transport; model names alone never enable the additional identity, and no provider override or WebSocket transport is registered for either CLIProxy path.
 
 For CLIProxy models the compaction request carries only the downstream proxy
 credential, the Pi session identity the proxy's affinity selector reads
@@ -195,7 +196,7 @@ Users should be aware:
 Config is read from:
 
 - `$PI_CODING_AGENT_DIR/openai-server-compaction.json` (global; defaults to `~/.pi/agent`, with Pi's own `~` expansion)
-- `.pi/openai-server-compaction.json` (project-local, takes precedence)
+- `.pi/openai-server-compaction.json` (project-local, takes precedence **except for `astraTarget`, which is global-only**)
 
 ```json
 {
@@ -208,7 +209,81 @@ Config is read from:
 }
 ```
 
-Environment overrides:
+### Separate Pi identity for a larger main-session window
+
+The context window belongs in Pi's `models.json`, not in this extension. To
+keep a worker identity at its existing window while selecting a larger window
+in the main session, define a separate **Pi provider**, retaining the same
+upstream model id and static CLIProxy transport/auth reference. For example,
+keep `cliproxy/gpt-6-astra` at 272000 and add
+`cliproxy-main-400k/gpt-6-astra` with `contextWindow: 400000`. Copy only that
+model into the additional provider; preserve its output limit, capabilities,
+compatibility settings and credential reference. Never invent an upstream
+model id such as `gpt-6-astra-400k`.
+
+Opt this additional identity into CLIProxy compaction v2 in the **global**
+extension configuration:
+
+```json
+{
+  "astraTarget": {
+    "provider": "cliproxy-main-400k",
+    "api": "openai-responses",
+    "modelId": "gpt-6-astra",
+    "baseUrl": "http://127.0.0.1:8317/v1"
+  }
+}
+```
+
+- Default is `null` (disabled); the original literal `cliproxy` behavior is unchanged.
+- The single target has exactly those four fields, compared byte-for-byte.
+  Provider, API and model id must be exactly the values shown above; only the
+  static base is configurable. Arrays and other identities are rejected.
+  No wildcard, host inference, project permission, or environment override
+  grants access. The former `cliProxyTargets` array grants no permission.
+- The static HTTP(S) base must be a canonical URL ending in `/v1`, with no
+  userinfo, query, fragment, whitespace or patterns. Redirects during remote
+  compaction are refused. Invalid targets produce a configuration error;
+  they are never partially accepted or interpreted as broader permission.
+- Authentication is resolved for the selected identity only. There is no
+  fallback to another provider's key. A resolved auth base differing from the
+  approved base, or provider-scoped auth environment, refuses remote
+  compaction and leaves Pi's default compactor available. Dynamic/OAuth
+  transports and arbitrary compatible providers are not supported by this opt-in.
+- Normal requests and replay keep Pi's Responses transport; the opt-in does
+  not enable custom WebSockets, `store:true`, or `previous_response_id`.
+  Headers changed by another extension's normal-request hooks are not
+  automatically inherited by the remote fetch.
+- Artifacts remain keyed by `provider:api:id`. Switching to the additional
+  identity uses portable context until that identity compacts; it does not
+  migrate old blobs or recover already summarized history. Base URLs are not
+  part of that legacy key: **do not repoint an existing identity to a different
+  backend**. Start a new session if changing the approved backend.
+
+Select the additional identity explicitly with `/model`, without saving a new
+startup default. Keep worker selection explicit on the original provider/id.
+Any supervisor that follows the main identity must be pinned to the original
+identity **before** selecting the larger one. Do not change its reasoning
+level as part of the window change.
+
+For reversible activation, filter out an already installed old extension before
+loading this checkout; never load both. Pi supports a project package override
+with the same `source`, `"autoload": false`, and
+`"extensions": ["-src/index.ts"]`, plus a separate local-path package pointing
+at the validated checkout. An empty array in an `autoload:false` delta does
+**not** disable the inherited extension; use the exact negative path. The project must be trusted. Use
+`/reload` only in the intended main session and verify the loaded resource list;
+leave shared installations and running workers untouched. For an isolated
+one-shot test use `--no-extensions -e /path/to/checkout/src/index.ts` instead.
+
+Rollback: remove the additional target permission and select the original
+identity, reducing context safely first if it exceeds the old window. Restore
+only supervision/resource overrides introduced for the experiment. Never edit
+session JSONL/blobs, and never roll the protocol back to compact-v1. A 400000
+catalog window is configuration, not server-capacity evidence; with Pi's
+16384-token reserve its automatic threshold is above 383616 tokens.
+
+Environment overrides (none grants Astra target permission):
 
 | Variable                                           | Effect                                                      |
 |----------------------------------------------------|-------------------------------------------------------------|
@@ -248,6 +323,16 @@ Override the test model:
 ```bash
 PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai-codex/gpt-5.6-sol npm run test:live
 ```
+
+The offline `scripts/cli-proxy-targets.mjs` suite uses real Pi 0.85.1 catalogs,
+auth resolution, Responses serialization, SDK lifecycle and JSONL persistence;
+only HTTP responses/artifacts are synthetic. It proves no upstream recall.
+The opt-in live fixture `tests/live/cli-proxy-target-canary.mjs` requires explicit
+`--canary` authorization and a clean committed head. `--capacity` additionally
+requires a passing canary result on that exact head; it sends one tokenized
+~300k synthetic input, not a 400k-boundary or large-compaction test. It is not
+part of `npm test` and must only be used with operator authorization for the
+existing CLIProxy credential reference.
 
 ## Limitations
 

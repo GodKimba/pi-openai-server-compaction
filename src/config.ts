@@ -10,7 +10,15 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type JsonRecord = Record<string, unknown>;
 
+export type AstraTarget = {
+  provider: "cliproxy-main-400k";
+  api: "openai-responses";
+  modelId: "gpt-6-astra";
+  baseUrl: string;
+};
+
 export type ExtensionConfig = {
+  astraTarget?: AstraTarget | null;
   enabled?: boolean;
   includeAzure?: boolean;
   compactThreshold?: number;
@@ -21,6 +29,30 @@ export type ExtensionConfig = {
 
 export function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Exact static bases only; never normalize an opt-in into broader permission. */
+export function isCliProxyTargetBaseUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !/^https?:\/\//.test(value) || /[\s*?#\\\\]/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return Boolean(url.hostname) && !url.username && !url.password && url.pathname.endsWith("/v1") &&
+      url.href === value;
+  } catch {
+    return false;
+  }
+}
+
+export function parseAstraTarget(value: unknown): AstraTarget | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || Object.keys(value).sort().join(",") !== "api,baseUrl,modelId,provider" ||
+    value.provider !== "cliproxy-main-400k" || value.api !== "openai-responses" ||
+    value.modelId !== "gpt-6-astra" || !isCliProxyTargetBaseUrl(value.baseUrl)) {
+    throw new Error(
+      "Invalid global astraTarget: expected cliproxy-main-400k/openai-responses/gpt-6-astra and an exact static HTTP(S) /v1 base (no credentials, query, fragment, or patterns).",
+    );
+  }
+  return { provider: value.provider, api: value.api, modelId: value.modelId, baseUrl: value.baseUrl };
 }
 
 function readJsonFile(path: string): JsonRecord | undefined {
@@ -60,6 +92,8 @@ export function loadConfig(cwd: string): Required<ExtensionConfig> {
   const merged = { ...globalCfg, ...projectCfg };
 
   return {
+    // Project configuration must never grant or replace transport permission.
+    astraTarget: parseAstraTarget(globalCfg.astraTarget),
     enabled:
       toBoolean(process.env.PI_OPENAI_SERVER_COMPACTION_ENABLED) ??
       toBoolean(merged.enabled) ??

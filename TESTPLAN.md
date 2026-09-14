@@ -79,6 +79,30 @@ The offline harness in `scripts/smoke.mjs` covers:
 - the removed compact-v1 helpers staying removed, and no file under `src/` constructing that URL
 - end-to-end wiring: driving the real `session_before_compact` handler, one 404 closes the gate, announces itself once, and the next compaction issues no further remote request
 
+### Exact Astra main CLIProxy identity (Pi 0.85.1)
+
+`npm test` also runs `scripts/cli-proxy-targets.mjs`: real `ModelRuntime`
+400k/272k catalogs (including the follow-main counterexample), selected-provider
+auth, actual Responses serialization, SDK compaction, JSONL persistence,
+resume and original/alias round trips. Network responses and opaque artifacts
+are explicitly mocked; this is not upstream recall evidence. It rejects
+identity/base near misses, malformed entries and project widening, tests
+permission removal/disable, rejects auth-base mismatch before fetch, and
+checks that a 404 prevents a second remote attempt. Existing smoke retains
+legacy artifact replay and active-context-projection coverage.
+
+A live test must run on an identified clean head, load only the development
+extension in a private temporary agent directory, reuse only the existing
+credential reference, and stop at the first error without retry. The explicit
+`tests/live/cli-proxy-target-canary.mjs --canary` fixture uses ~2–5k synthetic
+tokens, validates one persisted v2 artifact, and requires recall without the
+marker in portable/visible history after same-process replay, identity return,
+and resume. Only after that succeeds on the same head may `--capacity` send
+one ~300k-token input. That proves >272k only, not exactly 400k or compaction
+under large-context load. No production session is used or rewritten. Results
+contain only sanitized checks, usage, paths/status and head; private fixture
+files are removed at process exit.
+
 ## Automated live test
 
 ```bash
