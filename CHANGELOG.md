@@ -3,6 +3,8 @@
 This changelog intentionally starts at **0.1.0**.
 
 ## Unreleased
+- add global-only `cliProxyTargets` opt-in for exact additional Pi provider/API/model/base identities using the existing CLIProxy Responses v2 path; context windows remain in Pi's catalog, with selected-identity auth and no new WebSocket transport
+- validate Pi 0.85.1 with real offline SDK/catalog/serialization/resource-filter regressions and a synthetic live Astra canary covering persisted opaque recall, identity round trip and resume; separately validate one >272k input request, not an exact 400k boundary or large compaction (see `VALIDATION.md`)
 - remove the legacy `POST /v1/responses/compact` (compact v1) selection entirely; the Codex upstream behind CLIProxyAPI began answering 404 on 2026-08-12 after succeeding until that day, and CLIProxyAPI charges an upstream 404 against the selected credential with a 12-hour `not_found` cooldown, so one `/compact` walked the whole pool into cooldown and made later ordinary turns fail with `503 auth_unavailable`
 - route `cliproxy/*` Responses compaction through the already-owned Responses compaction v2 path instead: an ordinary `POST <baseUrl>/responses` with a trailing `compaction_trigger`
 - send CLIProxy compaction headers that carry only the downstream proxy credential, the session identity its affinity selector reads, and the forwarded `x-codex-beta-features` value; never derive a ChatGPT account id from the proxy credential and never write Codex installation state for this path

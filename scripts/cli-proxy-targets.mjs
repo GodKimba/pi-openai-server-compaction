@@ -170,7 +170,26 @@ try {
   await session.prompt("Synthetic turn after failed remote compaction.");
   await session.compact();
   assert.equal(captured.filter(r => r.remote).length, beforeFailures + 1, "404 disables subsequent remote attempts");
-  console.log("PASS offline: real Pi 0.85.1 catalogs, serializer, SDK compaction/persistence/resume/model round-trip; exact global-only targets, auth and 404 negatives. HTTP/artifact mocked, not upstream recall.");
+  session.dispose();
+  session = undefined;
+  // Real resource consumer regression for reversible project filtering. The
+  // old package is a sentinel fixture, never the installed production copy.
+  const oldPackage = join(root, "old-package");
+  mkdirSync(oldPackage);
+  writeFileSync(join(oldPackage, "package.json"), JSON.stringify({ name: "synthetic-old-extension", pi: { extensions: ["index.ts"] } }));
+  writeFileSync(join(oldPackage, "index.ts"), "export default function () { throw new Error('OLD_EXTENSION_MUST_NOT_LOAD'); }\n");
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [oldPackage] }));
+  writeFileSync(join(cwd, ".pi/settings.json"), JSON.stringify({ packages: [
+    { source: oldPackage, autoload: false, extensions: ["-index.ts"] },
+    { source: resolve(".") },
+  ] }));
+  const filteredSettings = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+  const filteredLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager: filteredSettings, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+  await filteredLoader.reload();
+  assert.deepEqual(filteredLoader.getExtensions().errors, []);
+  assert.equal(filteredLoader.getExtensions().extensions.length, 1);
+  assert.equal(filteredLoader.getExtensions().extensions[0].path, resolve("src/index.ts"));
+  console.log("PASS offline: real Pi 0.85.1 catalogs, serializer, SDK compaction/persistence/resume/model round-trip and resource filtering; exact global-only targets, auth and 404 negatives. HTTP/artifact mocked, not upstream recall.");
 } finally {
   session?.dispose();
   globalThis.fetch = originalFetch;

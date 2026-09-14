@@ -269,8 +269,10 @@ level as part of the window change.
 
 For reversible activation, filter out an already installed old extension before
 loading this checkout; never load both. Pi supports a project package override
-with the same `source` and `"extensions": []`, plus a separate local-path
-package pointing at the validated checkout. The project must be trusted. Use
+with the same `source`, `"autoload": false`, and
+`"extensions": ["-src/index.ts"]`, plus a separate local-path package pointing
+at the validated checkout. An empty array in an `autoload:false` delta does
+**not** disable the inherited extension; use the exact negative path. The project must be trusted. Use
 `/reload` only in the intended main session and verify the loaded resource list;
 leave shared installations and running workers untouched. For an isolated
 one-shot test use `--no-extensions -e /path/to/checkout/src/index.ts` instead.
