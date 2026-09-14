@@ -2,16 +2,28 @@
 
 ## Additional CLIProxy identity: Astra 400k catalog (2026-09-14)
 
-Validated code head: `861a8152711511df0ac1acd6b8456feb8b21d9ff`, based on
-upstream v2 `db6880ed2c084fb334fd6167354ad8e292aec1aa`. Pi and its AI/agent
-packages were **0.85.1**, Node 24.18.1. Later evidence/resource-filter test
-edits do not change the extension code exercised by these calls.
+The recorded live canary and capacity evidence below belongs only to code
+head `861a8152711511df0ac1acd6b8456feb8b21d9ff`, based on upstream v2
+`db6880ed2c084fb334fd6167354ad8e292aec1aa`. Pi and its AI/agent packages were
+**0.85.1**, Node 24.18.1. Those calls exercised the former generic
+`cliProxyTargets` configuration and matching path.
+
+Commit `a9743eec18ad8cba61516e14af381c429a3122d1` subsequently replaced that
+path in `src/config.ts` and `src/openai.ts` with the single exact `astraTarget`
+opt-in. The current narrowing has **not been live-rerun**; the historical PASS
+results below are not live validation of the current HEAD. Its focused offline
+SDK regression passed after narrowing, with mocked HTTP responses and artifacts.
+
+No live requests are authorized inside this pipeline. The driver is authorized
+to repeat only the small canary after the final validated head is synchronized;
+that run remains pending. No repeated 300k request, large compaction, or
+production activation is authorized.
 
 ### Offline evidence
 
-`npm test` passes: typecheck, existing smoke and the real Pi SDK/catalog/
+Before the `astraTarget` narrowing, `npm test` passed: typecheck, existing smoke and the real Pi SDK/catalog/
 serialization suite in `scripts/cli-proxy-targets.mjs`. Both benchmark
-self-tests also pass. The catalog keeps the original identity at 272000 and
+self-tests also passed. The catalog keeps the original identity at 272000 and
 selects the additional identity at 400000; a separate runtime following the
 main identity also gets 400000, demonstrating why supervision must be pinned.
 Network responses in this suite are mocked and are **not** upstream evidence.
@@ -19,7 +31,7 @@ The real resource loader additionally verifies an exact negative extension
 path in an `autoload:false` project delta; an empty delta array alone does not
 disable an inherited package resource.
 
-### Real small canary — PASS
+### Real small canary — PASS at `861a815`
 
 The explicit SDK fixture `tests/live/cli-proxy-target-canary.mjs --canary`
 loaded only this development extension, with no tools/discovered resources,
@@ -46,7 +58,7 @@ compaction were disabled; the fixture stops on the first error.
 - The original-identity turn sent no alias artifact; returning to the alias
   restored compatible replay. The normal original and alias turns succeeded.
 
-### Single capacity request — PASS (>272k, not exact 400k)
+### Single capacity request — PASS at `861a815` (>272k, not exact 400k)
 
 After the canary passed, the same head ran `--capacity` once with one synthetic
 input of **300011 o200k_base tokens** and a request to answer only `OK`.
