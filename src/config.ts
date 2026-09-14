@@ -10,7 +10,15 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type JsonRecord = Record<string, unknown>;
 
+export type CliProxyTarget = {
+  provider: string;
+  api: "openai-responses";
+  modelId: string;
+  baseUrl: string;
+};
+
 export type ExtensionConfig = {
+  cliProxyTargets?: CliProxyTarget[];
   enabled?: boolean;
   includeAzure?: boolean;
   compactThreshold?: number;
@@ -21,6 +29,34 @@ export type ExtensionConfig = {
 
 export function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Exact static bases only; never normalize an opt-in into broader permission. */
+export function isCliProxyTargetBaseUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !/^https?:\/\//.test(value) || /[\s*?#\\\\]/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return Boolean(url.hostname) && !url.username && !url.password && url.pathname.endsWith("/v1") &&
+      url.href === value;
+  } catch {
+    return false;
+  }
+}
+
+export function parseCliProxyTargets(value: unknown): CliProxyTarget[] {
+  if (value === undefined) return [];
+  const invalid = () => new Error(
+    "Invalid global cliProxyTargets: expected exact provider/api/modelId/baseUrl entries with openai-responses and a static HTTP(S) /v1 base (no credentials, query, fragment, or patterns).",
+  );
+  if (!Array.isArray(value)) throw invalid();
+  return value.map((entry) => {
+    if (!isRecord(entry) || Object.keys(entry).sort().join(",") !== "api,baseUrl,modelId,provider" ||
+      typeof entry.provider !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(entry.provider) ||
+      ["openai", "openai-codex", "azure-openai", "azure-openai-responses", "cliproxy"].includes(entry.provider) ||
+      entry.api !== "openai-responses" || typeof entry.modelId !== "string" ||
+      !entry.modelId || /[\s*?:]/.test(entry.modelId) || !isCliProxyTargetBaseUrl(entry.baseUrl)) throw invalid();
+    return { provider: entry.provider, api: entry.api, modelId: entry.modelId, baseUrl: entry.baseUrl };
+  });
 }
 
 function readJsonFile(path: string): JsonRecord | undefined {
@@ -60,6 +96,8 @@ export function loadConfig(cwd: string): Required<ExtensionConfig> {
   const merged = { ...globalCfg, ...projectCfg };
 
   return {
+    // Project configuration must never grant or replace transport permission.
+    cliProxyTargets: parseCliProxyTargets(globalCfg.cliProxyTargets),
     enabled:
       toBoolean(process.env.PI_OPENAI_SERVER_COMPACTION_ENABLED) ??
       toBoolean(merged.enabled) ??

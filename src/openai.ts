@@ -61,8 +61,14 @@ export function isDirectOpenAIResponsesModel(model: ModelLike): boolean {
   return host === undefined || host === "api.openai.com";
 }
 
-export function isCliProxyResponsesModel(model: ModelLike): boolean {
-  if (model.provider !== "cliproxy" || model.api !== "openai-responses") return false;
+export function isCliProxyResponsesModel(model: ModelLike, cfg?: ExtensionConfig): boolean {
+  if (model.api !== "openai-responses") return false;
+  if (model.provider !== "cliproxy") {
+    return cfg?.cliProxyTargets?.some((target) =>
+      model.provider === target.provider && model.api === target.api &&
+      model.id === target.modelId && model.baseUrl === target.baseUrl,
+    ) ?? false;
+  }
   if (typeof model.baseUrl !== "string" || !model.baseUrl.trim()) return false;
   try {
     const url = new URL(model.baseUrl);
@@ -93,16 +99,17 @@ export function supportsPreviousResponseId(
   cfg: Required<ExtensionConfig>,
 ): model is ModelLike {
   if (!isOpenAIResponsesModel(model)) return false;
+  if (isCliProxyResponsesModel(model, cfg)) return false;
   if (isDirectOpenAIResponsesModel(model)) return true;
   return cfg.includeAzure && isAzureOpenAIResponsesModel(model);
 }
 
-export function supportsRemoteCompactionModel(model: unknown): model is ModelLike {
+export function supportsRemoteCompactionModel(model: unknown, cfg?: ExtensionConfig): model is ModelLike {
   if (!isOpenAIResponsesModel(model)) return false;
   return (
     isDirectOpenAIResponsesModel(model) ||
     isOpenAICodexResponsesModel(model) ||
-    isCliProxyResponsesModel(model)
+    isCliProxyResponsesModel(model, cfg)
   );
 }
 

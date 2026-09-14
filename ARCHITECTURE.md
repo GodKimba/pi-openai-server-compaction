@@ -161,6 +161,15 @@ Loads and normalizes configuration from:
 - `.pi/openai-server-compaction.json`
 - environment variables
 
+`cliProxyTargets` is the exception to project precedence: only the global
+file can grant additional exact CLIProxy provider/API/model/base identities.
+`src/openai.ts` receives that config explicitly; `src/index.ts` threads it into
+compaction and replay, and `src/remote-compaction.ts` uses it for the same v2
+endpoint/header path without renaming the selected provider. Resolved auth
+must match the approved static base and have no provider-scoped environment.
+The capability changes neither Pi's catalog windows nor artifact identity.
+See README's separate-identity configuration and rollback contract.
+
 ### `src/state.ts`
 
 Stores ephemeral runtime state only: per-session continuation, reconstructed remote replay state, observed request shape, and the per-model remote-compaction eligibility gate.
